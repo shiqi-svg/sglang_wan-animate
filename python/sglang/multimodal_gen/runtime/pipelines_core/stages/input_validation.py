@@ -232,11 +232,35 @@ class InputValidationStage(PipelineStage):
         if real_frame_len == 0 or len(face_video) == 0:
             raise ValueError("pose_video and face_video must not be empty")
 
+        # clip_len = config.clip_len
+        # segment_len = clip_len - refert_num
+        # if segment_len <= 0:
+        #     raise ValueError("clip_len must be greater than refert_num")
+        # target_len = self._get_valid_len(real_frame_len, clip_len, overlap=refert_num)
         clip_len = config.clip_len
+        print(f"Original clip_len: {clip_len}")
+        if clip_len == -1:
+            assert refert_num == 1, "Auto calculation of clip_len only supports refert_num=1."
+            # clip_len = int((real_frame_len//(6-2))//4)*4+5
+            target_len = real_frame_len-(real_frame_len-1)%4
+            divide_n = (target_len-100)//99 + 1 #进行divide_n+1次滑动
+            divide_n = max(0, divide_n)
+            clip_len = (target_len+divide_n)//(divide_n+1) if divide_n>0 else target_len
+            logger.info(f"Auto calculating clip_len: {clip_len}, divide_n: {divide_n}.")
+            if clip_len > 100:
+                clip_len = 97
+                target_len = (clip_len-1)*(divide_n)+clip_len
+                if abs(target_len - real_frame_len) > clip_len/2:
+                    target_len += clip_len
+            config.clip_len = clip_len
+            logger.info(f"Auto setting clip_len to {clip_len}.")
+        else:
+            target_len = self._get_valid_len(real_frame_len, clip_len, overlap=refert_num)
+
         segment_len = clip_len - refert_num
         if segment_len <= 0:
             raise ValueError("clip_len must be greater than refert_num")
-        target_len = self._get_valid_len(real_frame_len, clip_len, overlap=refert_num)
+
 
         batch.num_frames = target_len
         batch.extra["real_frame_len"] = real_frame_len
