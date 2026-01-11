@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 import os
 from typing import List, Union
 
@@ -414,8 +415,8 @@ class ViTPose(SimpleOnnxInference):
 
 
 class Pose2d:
-    def __init__(self, checkpoint, detector_checkpoint=None, device="cpu", **kwargs):
-
+    def __init__(self, checkpoint, detector_checkpoint=None, device="cpu",num_workers=8, **kwargs):
+        self.num_workers = num_workers
         if detector_checkpoint is not None:
             self.detector = Yolo(detector_checkpoint, device=device)
         else:
@@ -462,6 +463,22 @@ class Pose2d:
             images = [cv2.cvtColor(image, cv2.COLOR_BGR2RGB) for image in inputs]
         return images
 
+    def _detector_forward(self, image):
+        img, shape = self.detector.preprocess(image)
+        result = self.detector(img[None], shape[None])
+        if isinstance(result, (list, tuple)) and len(result) > 0:
+            first_entry = result[0]
+            if isinstance(first_entry, dict) and "bbox" in first_entry:
+                return first_entry["bbox"]
+            if isinstance(first_entry, (list, tuple)) and len(first_entry) > 0 and isinstance(first_entry[0], dict):
+                return first_entry[0].get("bbox")
+        return None
+
+    def _pose_forward(self, image_bbox_tuple):
+        _image, _bbox = image_bbox_tuple
+        img_norm, center, scale = self.model.preprocess(_image, _bbox)
+        return self.model(img_norm[None], center[None], scale[None])
+
     def __call__(
         self,
         inputs: Union[str, np.ndarray, List[np.ndarray]],
@@ -482,19 +499,23 @@ class Pose2d:
         images = self.load_images(inputs)
         H, W = images[0].shape[:2]
         if self.detector is not None:
-            bboxes = []
-            for _image in images:
-                img, shape = self.detector.preprocess(_image)
-                bboxes.append(self.detector(img[None], shape[None])[0][0]["bbox"])
+            if self.num_workers > 1:
+                with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
+                    bboxes = list(executor.map(self._detector_forward, images))
+            else:
+                bboxes = [self._detector_forward(_image) for _image in images]
         else:
             bboxes = [None] * len(images)
 
-        kp2ds = []
-        for _image, _bbox in zip(images, bboxes):
-            img, center, scale = self.model.preprocess(_image, _bbox)
-            kp2ds.append(self.model(img[None], center[None], scale[None]))
-        kp2ds = np.concatenate(kp2ds, 0)
+        if self.num_workers > 1:
+            with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
+                kp2d_chunks = list(executor.map(self._pose_forward, zip(images, bboxes)))
+        else:
+            kp2d_chunks = [self._pose_forward(item) for item in zip(images, bboxes)]
+
+        kp2ds = np.concatenate(kp2d_chunks, axis=0)
         metas = load_pose_metas_from_kp2ds_seq(kp2ds, width=W, height=H)
+        
         return metas
 
 
