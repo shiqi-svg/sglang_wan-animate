@@ -205,7 +205,7 @@ class Wan2_2_Animate_14B_Config(WanI2V480PConfig):
     flow_shift: float | None = 5.0
     boundary_ratio: float | None = 0.900
     refert_num: int = 1
-    clip_len: int = 77
+    clip_len: int = -1 #set to -1 for auto calculation based on input video length
 
     def get_latent_video_length(self, num_frames: int) -> int:
         return self.clip_len
