@@ -256,7 +256,8 @@ class InputValidationStage(PipelineStage):
             logger.info(f"Auto setting clip_len to {clip_len}.")
         else:
             target_len = self._get_valid_len(real_frame_len, clip_len, overlap=refert_num)
-
+        
+        print(f"Using clip_len: {clip_len}, target_len: {target_len}.")
         segment_len = clip_len - refert_num
         if segment_len <= 0:
             raise ValueError("clip_len must be greater than refert_num")
