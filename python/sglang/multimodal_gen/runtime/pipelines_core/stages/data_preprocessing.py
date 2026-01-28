@@ -29,9 +29,12 @@ from sglang.multimodal_gen.runtime.utils.pose2d import (
     padding_resize,
     read_img,
     resize_by_area,
+    get_mask_body_img,
+    get_aug_mask,
+
 )
 from sglang.multimodal_gen.runtime.utils.retarget_pose import get_retarget_pose
-
+from diffusers import FluxKontextPipeline
 logger = init_logger(__name__)
 
 
@@ -529,6 +532,7 @@ class WanDataPreprocessingStage(PipelineStage):
     def __init__(
         self,
         preprocess_model_path: str | None = None,
+        flux_kontext_path: str | None = None,
     ):
         super().__init__()
         self.pose2d = None
@@ -539,6 +543,10 @@ class WanDataPreprocessingStage(PipelineStage):
             resolved_det = det_path
             resolved_pose = pose_path
             self._init_pose2d(resolved_pose, resolved_det)
+
+        if flux_kontext_path is not None:
+            self.flux_kontext = FluxKontextPipeline.from_pretrained(flux_kontext_path, torch_dtype=torch.bfloat16).to("cuda")
+
 
     def _init_pose2d(
         self, pose2d_checkpoint_path: str, det_checkpoint_path: str
@@ -571,121 +579,237 @@ class WanDataPreprocessingStage(PipelineStage):
 
         # Configs with defaults
         default_height = 1280 if batch.height is None else batch.height
-        default_width = 740 if batch.width is None else batch.width
+        default_width = 720 if batch.width is None else batch.width
 
         fps = batch.fps
         retarget_flag = (
             batch.retarget_flag if hasattr(batch, "retarget_flag") else False
         )
         use_flux = batch.use_flux if hasattr(batch, "use_flux") else False
-
-        # --- 2. Process Reference Image ---
-        logger.info(f"Processing reference image: {image_path}")
-        refer_img = cv2.imread(image_path)
-        refer_img = refer_img[..., ::-1]  # BGR -> RGB
-
-        # Resize logic
-        refer_img = resize_by_area(
-            refer_img, default_height * default_width, divisor=16
+        replace_flag = retarget_flag = (
+            batch.retarget_flag if hasattr(batch, "replace_flag") else False
         )
+        if replace_flag:
+            video_reader = VideoReader(video_path)
+            frame_num = len(video_reader)
+            video_fps = video_reader.get_avg_fps()
 
-        # Extract Reference Pose
-        refer_pose_meta = self.pose2d([refer_img])[0]
+            duration = video_reader.get_frame_timestamp(-1)[-1]      
+            expected_frame_num = int(duration * video_fps + 0.5) 
+            ratio = abs((frame_num - expected_frame_num)/frame_num)         
+            if ratio > 0.1:
+                print("Warning: The difference between the actual number of frames and the expected number of frames is two large")
+                frame_num = expected_frame_num
 
-        # --- 3. Process Input Video ---
-        logger.info(f"Processing template video: {video_path}")
-        video_reader = VideoReader(video_path)
-        frame_num = len(video_reader)
-        video_fps = video_reader.get_avg_fps()
+            if fps == -1:
+                fps = video_fps
 
-        if fps == -1:
-            fps = video_fps
+            target_num = int(frame_num / video_fps * fps)
+            print('target_num: {}'.format(target_num))
+            idxs = get_frame_indices(frame_num, video_fps, target_num, fps)
+            frames = video_reader.get_batch(idxs).asnumpy()
 
-        # Frame Sampling Logic
-        target_num = int(frame_num / video_fps * fps)
-        idxs = get_frame_indices(frame_num, video_fps, target_num, fps)
-        frames = video_reader.get_batch(idxs).asnumpy()  # [T, H, W, C]
+            frames = [resize_by_area(frame, default_height * default_width, divisor=16) for frame in frames]
+            height, width = frames[0].shape[:2]
+            logger.info(f"Processing pose meta")
 
-        # Initial Resize of Frames
-        # Note: frames here are resized to match resolution area logic
-        # You might want to resize them to match refer_img dimensions exactly if needed
-        frames = [
-            resize_by_area(frame, default_height * default_width, divisor=16)
-            for frame in frames
-        ]
+            tpl_pose_metas = self.pose2d(frames)
 
-        # --- 4. Extract Poses & Faces from Video ---
-        logger.info("Extracting video poses")
+            face_images = []
+            for idx, meta in enumerate(tpl_pose_metas):
+                face_bbox_for_image = get_face_bboxes(meta['keypoints_face'][:, :2], scale=1.3,
+                                                    image_shape=(frames[0].shape[0], frames[0].shape[1]))
 
-        # Optim: Process first frame separately if needed, or all at once
-        tpl_pose_metas = self.pose2d(frames)
-        tpl_pose_meta0 = tpl_pose_metas[0]
+                x1, x2, y1, y2 = face_bbox_for_image
+                face_image = frames[idx][y1:y2, x1:x2]
+                face_image = cv2.resize(face_image, (512, 512))
+                face_images.append(face_image)
 
-        face_images = []
-        for idx, meta in enumerate(tpl_pose_metas):
-            # Face Cropping
-            face_bbox = get_face_bboxes(
-                meta["keypoints_face"][:, :2],
-                scale=1.3,
-                image_shape=(default_height, default_width),
-            )
-            x1, x2, y1, y2 = face_bbox
-            face_image = frames[idx][y1:y2, x1:x2]
-            face_image = cv2.resize(face_image, (512, 512))
-            face_images.append(face_image)
+            refer_img = cv2.imread(image_path)
+            refer_img = refer_img[..., ::-1]  # BGR -> RGB
 
-        # TODO(LZY): Retargeting Logic
-        if retarget_flag:
-            logger.info("Performing pose retargeting...")
-            if use_flux:
-                raise NotImplementedError("Flux is not supported now")
-            else:
-                # Standard Retarget (No Flux)
-                tpl_retarget_pose_metas = get_retarget_pose(
-                    tpl_pose_meta0, refer_pose_meta, tpl_pose_metas, None, None
-                )
-        else:
-            # No Retargeting, just format conversion
-            tpl_retarget_pose_metas = [
-                AAPoseMeta.from_humanapi_meta(meta) for meta in tpl_pose_metas
-            ]
+            refer_img = padding_resize(refer_img, height, width)
+            logger.info(f"Processing template video: {video_path}")
+            tpl_retarget_pose_metas = [AAPoseMeta.from_humanapi_meta(meta) for meta in tpl_pose_metas]
+            cond_images = []
 
-        # --- 6. Draw Condition Images (Skeleton) ---
-        cond_images = []
-
-        for idx, meta in enumerate(tpl_retarget_pose_metas):
-            if retarget_flag:
-                # If retargeted, we draw on a canvas matching reference image size
-                # (usually refer_img shape)
+            for idx, meta in enumerate(tpl_retarget_pose_metas):
                 canvas = np.zeros_like(refer_img)
                 conditioning_image = draw_aapose_by_meta_new(canvas, meta)
-            else:
-                # If not retargeted, draw on canvas matching video frame size
-                # and then pad/resize to match reference
-                canvas = np.zeros_like(frames[0])
-                conditioning_image = draw_aapose_by_meta_new(canvas, meta)
-                conditioning_image = padding_resize(
-                    conditioning_image, refer_img.shape[0], refer_img.shape[1]
+                cond_images.append(conditioning_image)
+
+            masks = self.get_mask(frames, 400, tpl_pose_metas)# 使用身体关键点作为提示点遮罩生成（SAM2）
+
+            bg_images = []
+            aug_masks = []
+
+            iterations = 3
+            k = 7
+            w_len, h_len = 15, 15
+            #遮罩优化
+            for frame, mask in zip(frames, masks):
+                if iterations > 0:
+                    _, each_mask = get_mask_body_img(frame, mask, iterations=iterations, k=k)# 膨胀处理（扩大遮罩范围）
+                    each_aug_mask = get_aug_mask(each_mask, w_len=w_len, h_len=h_len)# 网格化填充（消除遮罩孔洞）
+                else:
+                    each_aug_mask = mask
+
+                each_bg_image = frame * (1 - each_aug_mask[:, :, None])# 背景提取，使用遮罩将人物部分置为黑色
+                bg_images.append(each_bg_image)
+                aug_masks.append(each_aug_mask)
+
+            batch.extra["pose_video"] = cond_images
+            batch.extra["face_video"] = face_images
+            batch.extra["bg_video"] = bg_images
+            batch.extra["mask_video"] = aug_masks
+
+        else:
+            # --- 2. Process Reference Image ---
+            logger.info(f"Processing reference image: {image_path}")
+            refer_img = cv2.imread(image_path)
+            refer_img = refer_img[..., ::-1]  # BGR -> RGB
+
+            # Resize logic
+            refer_img = resize_by_area(
+                refer_img, default_height * default_width, divisor=16
+            )
+
+            # Extract Reference Pose
+            refer_pose_meta = self.pose2d([refer_img])[0]
+
+            # --- 3. Process Input Video ---
+            logger.info(f"Processing template video: {video_path}")
+            video_reader = VideoReader(video_path)
+            frame_num = len(video_reader)
+            video_fps = video_reader.get_avg_fps()
+
+            # Frame Sampling Logic
+            duration = video_reader.get_frame_timestamp(-1)[-1]      
+            expected_frame_num = int(duration * video_fps + 0.5) 
+            ratio = abs((frame_num - expected_frame_num)/frame_num)         
+            if ratio > 0.1:
+                print("Warning: The difference between the actual number of frames and the expected number of frames is two large")
+                frame_num = expected_frame_num
+
+            if fps == -1:
+                fps = video_fps
+
+            target_num = int(frame_num / video_fps * fps)
+            idxs = get_frame_indices(frame_num, video_fps, target_num, fps)
+            frames = video_reader.get_batch(idxs).asnumpy()  # [T, H, W, C]
+
+            # Initial Resize of Frames
+            # Note: frames here are resized to match resolution area logic
+            # You might want to resize them to match refer_img dimensions exactly if needed
+            # frames = [
+            #     resize_by_area(frame, default_height * default_width, divisor=16)
+            #     for frame in frames
+            # ]
+
+            # --- 4. Extract Poses & Faces from Video ---
+            logger.info("Extracting video poses")
+
+            # Optim: Process first frame separately if needed, or all at once
+            tpl_pose_metas = self.pose2d(frames)
+            tpl_pose_meta0 = tpl_pose_metas[0]
+
+            face_images = []
+            for idx, meta in enumerate(tpl_pose_metas):
+                # Face Cropping
+                face_bbox = get_face_bboxes(
+                    meta["keypoints_face"][:, :2],
+                    scale=1.3,
+                    image_shape=(default_height, default_width),
                 )
+                x1, x2, y1, y2 = face_bbox
+                face_image = frames[idx][y1:y2, x1:x2]
+                face_image = cv2.resize(face_image, (512, 512))
+                face_images.append(face_image)
 
-            cond_images.append(conditioning_image)
+            # TODO(LZY): Retargeting Logic
+            if retarget_flag:
+                logger.info("Performing pose retargeting...")
+                if use_flux:
+                    tpl_prompt, refer_prompt = self.get_editing_prompts(tpl_pose_metas, refer_pose_meta)
+                    refer_input = Image.fromarray(refer_img)
+                    refer_edit = self.flux_kontext(
+                            image=refer_input,
+                            height=refer_img.shape[0],
+                            width=refer_img.shape[1],
+                            prompt=refer_prompt,
+                            guidance_scale=2.5,
+                            num_inference_steps=28,
+                        ).images[0]
+                    
+                    refer_edit = Image.fromarray(padding_resize(np.array(refer_edit), refer_img.shape[0], refer_img.shape[1]))
+                    refer_edit_path = os.path.join(output_path, 'refer_edit.png')
+                    refer_edit.save(refer_edit_path)
+                    refer_edit_pose_meta = self.pose2d([np.array(refer_edit)])[0]
 
-        # --- 7. Tensor Conversion & Batch Update ---
-        # Convert Lists of Numpy Arrays to PyTorch Tensors [B, C, T, H, W]
-        # Range: [-1, 1] for pixels
+                    tpl_img = frames[1]
+                    tpl_input = Image.fromarray(tpl_img)
+                    
+                    tpl_edit = self.flux_kontext(
+                            image=tpl_input,
+                            height=tpl_img.shape[0],
+                            width=tpl_img.shape[1],
+                            prompt=tpl_prompt,
+                            guidance_scale=2.5,
+                            num_inference_steps=28,
+                        ).images[0]
+                    
+                    tpl_edit = Image.fromarray(padding_resize(np.array(tpl_edit), tpl_img.shape[0], tpl_img.shape[1]))
+                    tpl_edit_path = os.path.join(output_path, 'tpl_edit.png')
+                    tpl_edit.save(tpl_edit_path)
+                    tpl_edit_pose_meta0 = self.pose2d([np.array(tpl_edit)])[0]
+                    tpl_retarget_pose_metas = get_retarget_pose(tpl_pose_meta0, refer_pose_meta, tpl_pose_metas, tpl_edit_pose_meta0, refer_edit_pose_meta)
+                else:
+                    # Standard Retarget (No Flux)
+                    tpl_retarget_pose_metas = get_retarget_pose(
+                        tpl_pose_meta0, refer_pose_meta, tpl_pose_metas, None, None
+                    )
+            else:
+                # No Retargeting, just format conversion
+                tpl_retarget_pose_metas = [
+                    AAPoseMeta.from_humanapi_meta(meta) for meta in tpl_pose_metas
+                ]
 
-        batch.extra["pose_video"] = cond_images
-        batch.extra["face_video"] = face_images
+            # --- 6. Draw Condition Images (Skeleton) ---
+            cond_images = []
 
-        # Also store raw reference image for VAE encoding later if needed
-        # [B, C, 1, H, W]
-        # batch.extra["refer_image"] = self._to_tensor([refer_img])
+            for idx, meta in enumerate(tpl_retarget_pose_metas):
+                if retarget_flag:
+                    # If retargeted, we draw on a canvas matching reference image size
+                    # (usually refer_img shape)
+                    canvas = np.zeros_like(refer_img)
+                    conditioning_image = draw_aapose_by_meta_new(canvas, meta)
+                else:
+                    # If not retargeted, draw on canvas matching video frame size
+                    # and then pad/resize to match reference
+                    canvas = np.zeros_like(frames[0])
+                    conditioning_image = draw_aapose_by_meta_new(canvas, meta)
+                    conditioning_image = padding_resize(
+                        conditioning_image, refer_img.shape[0], refer_img.shape[1]
+                    )
 
-        # Optional: Save debug video to disk if output_path is provided
-        if batch.debug and output_path is not None:
-            self._save_debug_videos(output_path, fps, face_images, cond_images)
+                cond_images.append(conditioning_image)
 
-        return batch
+            # --- 7. Tensor Conversion & Batch Update ---
+            # Convert Lists of Numpy Arrays to PyTorch Tensors [B, C, T, H, W]
+            # Range: [-1, 1] for pixels
+
+            batch.extra["pose_video"] = cond_images
+            batch.extra["face_video"] = face_images
+
+            # Also store raw reference image for VAE encoding later if needed
+            # [B, C, 1, H, W]
+            # batch.extra["refer_image"] = self._to_tensor([refer_img])
+
+            # Optional: Save debug video to disk if output_path is provided
+            if batch.debug and output_path is not None:
+                self._save_debug_videos(output_path, fps, face_images, cond_images)
+
+            return batch
 
     def _run_flux_edit(self, image_np, prompt, target_h, target_w):
         """Helper to run Flux Kontext editing."""
