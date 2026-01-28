@@ -127,6 +127,9 @@ class WanAnimateConditioningStage(PipelineStage):
         batch,
         server_args,
         prev_segment_cond_video,
+        background_video=None,
+        mask_video=None,
+        replace_flag: bool = False,
         batch_size: int = 1,
         segment_frame_length: int = 77,
         height: int = 720,
@@ -185,27 +188,114 @@ class WanAnimateConditioningStage(PipelineStage):
             dtype=dtype,
             device=device,
         )
-
-        # Prepend the conditioning frames from the previous segment to the remaining segment video in the frame dim
         prev_segment_cond_video = prev_segment_cond_video.to(dtype=dtype)
-        full_segment_cond_video = torch.cat(
-            [prev_segment_cond_video, remaining_segment], dim=2
-        )
+
+        if replace_flag:
+            if background_video is None:
+                full_segment_cond_video = torch.cat(
+                    [prev_segment_cond_video, remaining_segment], dim=2
+                )
+            else:
+                background_video = background_video.to(dtype=dtype)
+                if background_video.shape[2] != segment_frame_length:
+                    if background_video.shape[2] < segment_frame_length:
+                        pad_frames = segment_frame_length - background_video.shape[2]
+                        pad_tensor = torch.zeros(
+                            batch_size,
+                            background_video.shape[1],
+                            pad_frames,
+                            height,
+                            width,
+                            dtype=dtype,
+                            device=device,
+                        )
+                        background_video = torch.cat(
+                            [background_video, pad_tensor], dim=2
+                        )
+                    else:
+                        background_video = background_video[:, :, :segment_frame_length]
+
+                if first_frame:
+                    full_segment_cond_video = background_video
+                else:
+                    remaining_bg = background_video[:, :, prev_segment_cond_frames:, :, :]
+                    if remaining_bg.shape[2] != remaining_segment_frames:
+                        remaining_bg = remaining_bg[:, :, :remaining_segment_frames]
+                    full_segment_cond_video = torch.cat(
+                        [prev_segment_cond_video, remaining_bg], dim=2
+                    )
+        else:
+            # Prepend the conditioning frames from the previous segment to the remaining segment video in the frame dim
+            full_segment_cond_video = torch.cat(
+                [prev_segment_cond_video, remaining_segment], dim=2
+            )
 
         prev_segment_cond_latents = self.encode(
             full_segment_cond_video, batch, server_args
         )
 
         # Prepare I2V mask
-        prev_segment_cond_mask = self.get_i2v_mask(
-            batch_size,
-            num_latent_frames,
-            latent_height,
-            latent_width,
-            mask_len=prev_segment_cond_frames if not first_frame else 0,
-            dtype=dtype,
-            device=device,
-        )
+        if replace_flag:
+            if mask_video is None:
+                prev_segment_cond_mask = self.get_i2v_mask(
+                    batch_size,
+                    num_latent_frames,
+                    latent_height,
+                    latent_width,
+                    mask_len=prev_segment_cond_frames if not first_frame else 0,
+                    dtype=dtype,
+                    device=device,
+                )
+            else:
+                mask_pixel_values = 1.0 - mask_video.to(dtype=dtype)
+                if mask_pixel_values.shape[1] != 1:
+                    mask_pixel_values = mask_pixel_values[:, :1]
+                if mask_pixel_values.shape[2] != segment_frame_length:
+                    if mask_pixel_values.shape[2] < segment_frame_length:
+                        pad_frames = segment_frame_length - mask_pixel_values.shape[2]
+                        pad_tensor = torch.zeros(
+                            batch_size,
+                            1,
+                            pad_frames,
+                            height,
+                            width,
+                            dtype=dtype,
+                            device=device,
+                        )
+                        mask_pixel_values = torch.cat(
+                            [mask_pixel_values, pad_tensor], dim=2
+                        )
+                    else:
+                        mask_pixel_values = mask_pixel_values[:, :, :segment_frame_length]
+
+                mask_flat = mask_pixel_values.permute(0, 2, 1, 3, 4).flatten(0, 1)
+                mask_flat = F.interpolate(
+                    mask_flat, size=(latent_height, latent_width), mode="nearest"
+                )
+                mask_pixel_values = mask_flat.view(
+                    batch_size, segment_frame_length, 1, latent_height, latent_width
+                ).permute(0, 2, 1, 3, 4)
+
+                prev_segment_cond_mask = self.get_i2v_mask(
+                    batch_size,
+                    num_latent_frames,
+                    latent_height,
+                    latent_width,
+                    mask_len=prev_segment_cond_frames if not first_frame else 0,
+                    dtype=dtype,
+                    device=device,
+                    mask_pixel_values=mask_pixel_values,
+                )
+        else:
+            prev_segment_cond_mask = self.get_i2v_mask(
+                batch_size,
+                num_latent_frames,
+                latent_height,
+                latent_width,
+                mask_len=prev_segment_cond_frames if not first_frame else 0,
+                dtype=dtype,
+                device=device,
+            )
 
         # Prepend cond I2V mask to prev segment cond latents along channel dimension
         prev_segment_cond_latents = torch.cat(
@@ -218,6 +308,10 @@ class WanAnimateConditioningStage(PipelineStage):
 
         clip_len = server_args.pipeline_config.clip_len
         refert_num = server_args.pipeline_config.refert_num
+        replace_flag = bool(
+            batch.extra.get("replace_flag", False)
+            or getattr(batch, "replace_flag", False)
+        )
         cur_segment = batch.extra.get("cur_segment")
         start_frame = cur_segment * (clip_len - refert_num)
         end_frame = start_frame + clip_len
@@ -228,6 +322,15 @@ class WanAnimateConditioningStage(PipelineStage):
         face_video_tensor = batch.extra.get("face_video")[
             :, :, start_frame:end_frame, :, :
         ]
+        bg_video_tensor = None
+        mask_video_tensor = None
+        if replace_flag:
+            bg_video = batch.extra.get("bg_video")
+            mask_video = batch.extra.get("mask_video")
+            if bg_video is not None:
+                bg_video_tensor = bg_video[:, :, start_frame:end_frame, :, :]
+            if mask_video is not None:
+                mask_video_tensor = mask_video[:, :, start_frame:end_frame, :, :]
         if cur_segment == 0:
             prev_segment_cond_video = None
         else:
@@ -246,6 +349,9 @@ class WanAnimateConditioningStage(PipelineStage):
                 batch,
                 server_args,
                 prev_segment_cond_video,
+                background_video=bg_video_tensor,
+                mask_video=mask_video_tensor,
+                replace_flag=replace_flag,
                 segment_frame_length=clip_len,
                 height=batch.height,
                 width=batch.width,

@@ -582,13 +582,9 @@ class WanDataPreprocessingStage(PipelineStage):
         default_width = 720 if batch.width is None else batch.width
 
         fps = batch.fps
-        retarget_flag = (
-            batch.retarget_flag if hasattr(batch, "retarget_flag") else False
-        )
-        use_flux = batch.use_flux if hasattr(batch, "use_flux") else False
-        replace_flag = retarget_flag = (
-            batch.retarget_flag if hasattr(batch, "replace_flag") else False
-        )
+        retarget_flag = getattr(batch, "retarget_flag", False)
+        use_flux = getattr(batch, "use_flux", False)
+        replace_flag = getattr(batch, "replace_flag", False)
         if replace_flag:
             video_reader = VideoReader(video_path)
             frame_num = len(video_reader)

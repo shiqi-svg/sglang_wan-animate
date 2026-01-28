@@ -109,6 +109,38 @@ class VideoProcessingStage(PipelineStage):
         ).to(get_local_torch_device(), dtype=torch.float32)
         batch.extra["face_video"] = face_video_tensor
 
+        bg_video = batch.extra.get("bg_video")
+        if bg_video is not None:
+            bg_video_tensor = self.video_processor.preprocess_video(
+                bg_video,
+                target_height=batch.height,
+                target_width=batch.width,
+            ).to(get_local_torch_device(), dtype=torch.float32)
+            batch.extra["bg_video"] = bg_video_tensor
+
+        mask_video = batch.extra.get("mask_video")
+        if mask_video is not None:
+            if not isinstance(mask_video, list):
+                mask_video = [mask_video]
+            mask_frames = []
+            for mask in mask_video:
+                arr = np.array(mask)
+                if arr.ndim == 2:
+                    arr = arr[:, :, None]
+                if arr.shape[2] != 1:
+                    arr = arr[:, :, :1]
+                tensor = torch.from_numpy(arr).float()
+                if tensor.max() > 1:
+                    tensor = tensor / 255.0
+                tensor = tensor.permute(2, 0, 1)
+                mask_frames.append(tensor)
+
+            mask_tensor = torch.stack(mask_frames, dim=1)
+            mask_tensor = mask_tensor.unsqueeze(0)
+            batch.extra["mask_video"] = mask_tensor.to(
+                get_local_torch_device(), dtype=torch.float32
+            )
+
         return batch
 
     def verify_input(self, batch: Req, server_args: ServerArgs) -> VerificationResult:
@@ -116,6 +148,10 @@ class VideoProcessingStage(PipelineStage):
         result = VerificationResult()
         result.add_check("pose", batch.extra.get("pose_video"), V.list_not_empty)
         result.add_check("face", batch.extra.get("face_video"), V.list_not_empty)
+        if batch.extra.get("bg_video") is not None:
+            result.add_check("bg", batch.extra.get("bg_video"), V.list_not_empty)
+        if batch.extra.get("mask_video") is not None:
+            result.add_check("mask", batch.extra.get("mask_video"), V.list_not_empty)
         return result
 
     def verify_output(self, batch: Req, server_args: ServerArgs) -> VerificationResult:
@@ -127,4 +163,12 @@ class VideoProcessingStage(PipelineStage):
         result.add_check(
             "face", batch.extra.get("face_video"), [V.is_tensor, V.with_dims(5)]
         )
+        if batch.extra.get("bg_video") is not None:
+            result.add_check(
+                "bg", batch.extra.get("bg_video"), [V.is_tensor, V.with_dims(5)]
+            )
+        if batch.extra.get("mask_video") is not None:
+            result.add_check(
+                "mask", batch.extra.get("mask_video"), [V.is_tensor, V.with_dims(5)]
+            )
         return result
