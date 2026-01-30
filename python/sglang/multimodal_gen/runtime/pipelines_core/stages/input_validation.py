@@ -9,7 +9,7 @@ import os
 import numpy as np
 import torch
 import torchvision.transforms.functional as TF
-from PIL import Image
+import cv2
 
 from sglang.multimodal_gen.configs.pipeline_configs import WanI2V480PConfig
 from sglang.multimodal_gen.configs.pipeline_configs.base import ModelTaskType
@@ -24,9 +24,10 @@ from sglang.multimodal_gen.runtime.pipelines_core.stages.validators import (
 from sglang.multimodal_gen.runtime.platforms import current_platform
 from sglang.multimodal_gen.runtime.server_args import ServerArgs
 from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
-from sglang.multimodal_gen.utils import best_output_size
+from sglang.multimodal_gen.utils import best_output_size, try_load_image
 
 from decord import VideoReader
+from PIL import Image
 
 logger = init_logger(__name__)
 
@@ -209,6 +210,38 @@ class InputValidationStage(PipelineStage):
                 flip = not flip
         return target_array[:target_len]
 
+    def padding_resize(self, img_ori, height=512, width=512, padding_color=(0, 0, 0), interpolation=cv2.INTER_LINEAR):
+        ori_height = img_ori.shape[0]
+        ori_width = img_ori.shape[1]
+        channel = img_ori.shape[2]
+
+        img_pad = np.zeros((height, width, channel))
+        if channel == 1:
+            img_pad[:, :, 0] = padding_color[0]
+        else:
+            img_pad[:, :, 0] = padding_color[0]
+            img_pad[:, :, 1] = padding_color[1]
+            img_pad[:, :, 2] = padding_color[2]
+
+        if (ori_height / ori_width) > (height / width):
+            new_width = int(height / ori_height * ori_width)
+            img = cv2.resize(img_ori, (new_width, height), interpolation=interpolation)
+            padding = int((width - new_width) / 2)
+            if len(img.shape) == 2:
+                img = img[:, :, np.newaxis]  
+            img_pad[:, padding: padding + new_width, :] = img
+        else:
+            new_height = int(width / ori_width * ori_height)
+            img = cv2.resize(img_ori, (width, new_height), interpolation=interpolation)
+            padding = int((height - new_height) / 2)
+            if len(img.shape) == 2:
+                img = img[:, :, np.newaxis]  
+            img_pad[padding: padding + new_height, :, :] = img
+
+        img_pad = np.uint8(img_pad)
+
+        return img_pad
+
     def prepare_source(self, src_pose_path, src_face_path, src_ref_path):
         pose_video_reader = VideoReader(src_pose_path)
         pose_len = len(pose_video_reader)
@@ -245,11 +278,6 @@ class InputValidationStage(PipelineStage):
                     "pose_video_path and face_video_path must both be provided"
                 )
             return load_video(batch.pose_video_path), load_video(batch.face_video_path)
-        face_path = batch["face_video_path"] 
-        pose_path = batch["pose_video_path"] 
-        bg_path = batch["bg_video_path"]
-        mask_path = batch["mask_video_path"]
-        ref_path = batch["refer_image_path"]
 
         pose_video = batch.extra.get("pose_video")
         face_video = batch.extra.get("face_video")
@@ -267,12 +295,12 @@ class InputValidationStage(PipelineStage):
         # pose_video, face_video = self._load_wan_animate_videos(batch) 原来的代码
 
         #手动读取文件
-        face_path = batch["face_video_path"] 
-        pose_path = batch["pose_video_path"] 
-        bg_path = batch["bg_video_path"]
-        mask_path = batch["mask_video_path"]
-        ref_path = batch["refer_image_path"]
-
+        face_path = batch.extra.get("face_video_path") 
+        pose_path = batch.extra.get("pose_video_path") 
+        bg_path = batch.extra.get("bg_video_path")
+        mask_path = batch.extra.get("mask_video_path")
+        ref_path = batch.extra.get("ref_image_path")
+        # logger.info(f"查看一下: face_path: {face_path}, pose_path: {pose_path}, bg_path: {bg_path}, mask_path: {mask_path}, ref_path: {ref_path}")
         pose_video, face_video, refer_video = self.prepare_source(src_pose_path=pose_path, src_face_path=face_path, src_ref_path=ref_path)
         
 
@@ -326,6 +354,11 @@ class InputValidationStage(PipelineStage):
         batch.extra["mask_video"] = mask_video_tensor if mask_path is not None else None
         batch.extra["num_segments"] = target_len // segment_len
         batch.extra["cur_segment"] = 0
+        logger.info(f"查看一下: pose_video长度{len(batch.extra.get('pose_video'))}, face_video长度{len(batch.extra.get('face_video'))}, num_segments: {batch.extra.get('num_segments')}")
+        logger.info(f"查看一下: mask_video长度{len(batch.extra.get('mask_video')) if batch.extra.get('mask_video') is not None else 'None'}, face_video形状{batch.extra.get('face_video')}, num_segments: {batch.extra.get('num_segments')}")
+        logger.info(f"查看一下: pose_video形状{batch.extra.get('pose_video').shape}, face_video形状{batch.extra.get('face_video').shape}")
+        logger.info(f"查看一下: mask_video形状{batch.extra.get('mask_video').shape if batch.extra.get('mask_video') is not None else 'None'}, face_video形状{batch.extra.get('face_video').shape}")
+        
 
     def forward(
         self,

@@ -547,20 +547,20 @@ class WanDataPreprocessingStage(PipelineStage):
 
         pose2d_checkpoint_path = os.path.join(preprocess_model_path, 'pose2d/vitpose_h_wholebody.onnx')
         det_checkpoint_path = os.path.join(preprocess_model_path, 'det/yolov10m.onnx')
-        replace_flag = True
-        use_flux = False
-        sam_checkpoint_path = os.path.join(preprocess_model_path, 'sam2/sam2_hiera_large.pt') if replace_flag else None
-        flux_kontext_path = os.path.join(preprocess_model_path, 'FLUX.1-Kontext-dev') if use_flux else None
-        model_cfg = "sam2_hiera_l.yaml"
-        logger.info(f"输出路径：{sam_checkpoint_path}")
-        if sam_checkpoint_path is not None:
-            self.predictor = build_sam2_video_predictor(model_cfg, sam_checkpoint_path)
-            logger.info("SAM2 Video Predictor 成功初始化.")
-        if flux_kontext_path is not None:
-            self.flux_kontext = FluxKontextPipeline.from_pretrained(flux_kontext_path, torch_dtype=torch.bfloat16).to("cuda")
+        # replace_flag = True
+        # use_flux = False
+        # sam_checkpoint_path = os.path.join(preprocess_model_path, 'sam2/sam2_hiera_large.pt') if replace_flag else None
+        # flux_kontext_path = os.path.join(preprocess_model_path, 'FLUX.1-Kontext-dev') if use_flux else None
+        # model_cfg = "sam2_hiera_l.yaml"
+        # logger.info(f"输出路径：{sam_checkpoint_path}")
+        # if sam_checkpoint_path is not None:
+        #     self.predictor = build_sam2_video_predictor(model_cfg, sam_checkpoint_path)
+        #     logger.info("SAM2 Video Predictor 成功初始化.")
+        # if flux_kontext_path is not None:
+        #     self.flux_kontext = FluxKontextPipeline.from_pretrained(flux_kontext_path, torch_dtype=torch.bfloat16).to("cuda")
 
-        if flux_kontext_path is not None:
-            self.flux_kontext = FluxKontextPipeline.from_pretrained(flux_kontext_path, torch_dtype=torch.bfloat16).to("cuda")
+        # if flux_kontext_path is not None:
+        #     self.flux_kontext = FluxKontextPipeline.from_pretrained(flux_kontext_path, torch_dtype=torch.bfloat16).to("cuda")
 
 
     def _init_pose2d(
@@ -664,6 +664,7 @@ class WanDataPreprocessingStage(PipelineStage):
             batch.extra["bg_video_path"] = bg_path
             batch.extra["mask_video_path"] = mask_path
             batch.extra["ref_image_path"] = ref_path
+            # logger.info(f"测试：{batch['face_video_path']}")
             return batch
 
         if self.pose2d is None:
