@@ -4,6 +4,8 @@
 """
 Input validation stage for diffusion pipelines.
 """
+import os
+import os
 import numpy as np
 import torch
 import torchvision.transforms.functional as TF
@@ -23,6 +25,8 @@ from sglang.multimodal_gen.runtime.platforms import current_platform
 from sglang.multimodal_gen.runtime.server_args import ServerArgs
 from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
 from sglang.multimodal_gen.utils import best_output_size
+
+from decord import VideoReader
 
 logger = init_logger(__name__)
 
@@ -205,6 +209,34 @@ class InputValidationStage(PipelineStage):
                 flip = not flip
         return target_array[:target_len]
 
+    def prepare_source(self, src_pose_path, src_face_path, src_ref_path):
+        pose_video_reader = VideoReader(src_pose_path)
+        pose_len = len(pose_video_reader)
+        pose_idxs = list(range(pose_len))
+        cond_images = pose_video_reader.get_batch(pose_idxs).asnumpy()
+
+        face_video_reader = VideoReader(src_face_path)
+        face_len = len(face_video_reader)
+        face_idxs = list(range(face_len))
+        face_images = face_video_reader.get_batch(face_idxs).asnumpy()
+        height, width = cond_images[0].shape[:2]
+        refer_images = try_load_image(src_ref_path)
+        refer_images = self.padding_resize(refer_images, height=height, width=width)
+        return cond_images, face_images, refer_images
+    
+    def prepare_source_for_replace(self, src_bg_path, src_mask_path):
+        bg_video_reader = VideoReader(src_bg_path)
+        bg_len = len(bg_video_reader)
+        bg_idxs = list(range(bg_len))
+        bg_images = bg_video_reader.get_batch(bg_idxs).asnumpy()
+
+        mask_video_reader = VideoReader(src_mask_path)
+        mask_len = len(mask_video_reader)
+        mask_idxs = list(range(mask_len))
+        mask_images = mask_video_reader.get_batch(mask_idxs).asnumpy()
+        mask_images = mask_images[:, :, :, 0] / 255
+        return bg_images, mask_images
+
     @staticmethod
     def _load_wan_animate_videos(batch: Req):
         if batch.pose_video_path is not None or batch.face_video_path is not None:
@@ -213,6 +245,11 @@ class InputValidationStage(PipelineStage):
                     "pose_video_path and face_video_path must both be provided"
                 )
             return load_video(batch.pose_video_path), load_video(batch.face_video_path)
+        face_path = batch["face_video_path"] 
+        pose_path = batch["pose_video_path"] 
+        bg_path = batch["bg_video_path"]
+        mask_path = batch["mask_video_path"]
+        ref_path = batch["refer_image_path"]
 
         pose_video = batch.extra.get("pose_video")
         face_video = batch.extra.get("face_video")
@@ -227,7 +264,18 @@ class InputValidationStage(PipelineStage):
         if refert_num not in (1, 5):
             raise ValueError("refert_num must be 1 or 5")
 
-        pose_video, face_video = self._load_wan_animate_videos(batch)
+        # pose_video, face_video = self._load_wan_animate_videos(batch) 原来的代码
+
+        #手动读取文件
+        face_path = batch["face_video_path"] 
+        pose_path = batch["pose_video_path"] 
+        bg_path = batch["bg_video_path"]
+        mask_path = batch["mask_video_path"]
+        ref_path = batch["refer_image_path"]
+
+        pose_video, face_video, refer_video = self.prepare_source(src_pose_path=pose_path, src_face_path=face_path, src_ref_path=ref_path)
+        
+
         real_frame_len = len(pose_video)
         if real_frame_len == 0 or len(face_video) == 0:
             raise ValueError("pose_video and face_video must not be empty")
@@ -262,11 +310,20 @@ class InputValidationStage(PipelineStage):
         if segment_len <= 0:
             raise ValueError("clip_len must be greater than refert_num")
 
+        pose_video = self.inputs_padding(pose_video, target_len)
+        face_video = self.inputs_padding(face_video, target_len)
+
+        if bg_path is not None and mask_path is not None:
+            bg_video, mask_video = self.prepare_source_for_replace(src_bg_path=bg_path, src_mask_path=mask_path)
+            bg_video_tensor = self._inputs_padding(bg_video, target_len)
+            mask_video_tensor = self._inputs_padding(mask_video, target_len)
 
         batch.num_frames = target_len
         batch.extra["real_frame_len"] = real_frame_len
-        batch.extra["pose_video"] = self._inputs_padding(pose_video, target_len)
-        batch.extra["face_video"] = self._inputs_padding(face_video, target_len)
+        batch.extra["pose_video"] = pose_video
+        batch.extra["face_video"] = face_video
+        batch.extra["bg_video"] = bg_video_tensor if bg_path is not None else None
+        batch.extra["mask_video"] = mask_video_tensor if mask_path is not None else None
         batch.extra["num_segments"] = target_len // segment_len
         batch.extra["cur_segment"] = 0
 

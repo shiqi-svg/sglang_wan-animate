@@ -636,9 +636,36 @@ class WanDataPreprocessingStage(PipelineStage):
                     all_mask.append(out_mask)
 
         return all_mask
-    
 
     def forward(self, batch: Req, server_args: ServerArgs) -> Req:
+        # Fast path: reuse precomputed replace outputs if provided via env WAN_PREPROCESSED_DIR
+        # pre_dir = os.environ.get("WAN_PREPROCESSED_DIR")
+        
+        pre_dir = "/home/user/sglang_wan-animate/process_results"
+        if pre_dir:
+            def _read_video_mp4(path):
+                vr = VideoReader(path)
+                return [frame.asnumpy() for frame in vr]
+
+            face_path = os.path.join(pre_dir, "src_face.mp4")
+            pose_path = os.path.join(pre_dir, "src_pose.mp4")
+            bg_path = os.path.join(pre_dir, "src_bg.mp4")
+            mask_path = os.path.join(pre_dir, "src_mask.mp4")
+            ref_path = os.path.join(pre_dir, "src_ref.png")
+
+            # cond_images, face_images, refer_images = self.prepare_source(src_pose_path=pose_path, src_face_path=face_path, src_ref_path=ref_path)
+
+            # bg_images, mask_images = self.prepare_source_for_replace(src_bg_path, src_mask_path)
+            # bg_images = self.inputs_padding(bg_images, target_len)
+            # mask_images = self.inputs_padding(mask_images, target_len)
+
+            batch.extra["face_video_path"] = face_path
+            batch.extra["pose_video_path"] = pose_path
+            batch.extra["bg_video_path"] = bg_path
+            batch.extra["mask_video_path"] = mask_path
+            batch.extra["ref_image_path"] = ref_path
+            return batch
+
         if self.pose2d is None:
             return batch
         assert batch.video_path is not None
