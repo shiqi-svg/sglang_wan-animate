@@ -35,6 +35,7 @@ from sglang.multimodal_gen.runtime.utils.pose2d import (
 )
 from sglang.multimodal_gen.runtime.utils.retarget_pose import get_retarget_pose
 from diffusers import FluxKontextPipeline
+from sglang.multimodal_gen.runtime.utils.sam_utils import build_sam2_video_predictor
 logger = init_logger(__name__)
 
 
@@ -544,6 +545,20 @@ class WanDataPreprocessingStage(PipelineStage):
             resolved_pose = pose_path
             self._init_pose2d(resolved_pose, resolved_det)
 
+        pose2d_checkpoint_path = os.path.join(preprocess_model_path, 'pose2d/vitpose_h_wholebody.onnx')
+        det_checkpoint_path = os.path.join(preprocess_model_path, 'det/yolov10m.onnx')
+        replace_flag = True
+        use_flux = False
+        sam_checkpoint_path = os.path.join(preprocess_model_path, 'sam2/sam2_hiera_large.pt') if replace_flag else None
+        flux_kontext_path = os.path.join(preprocess_model_path, 'FLUX.1-Kontext-dev') if use_flux else None
+        model_cfg = "sam2_hiera_l.yaml"
+        logger.info(f"输出路径：{sam_checkpoint_path}")
+        if sam_checkpoint_path is not None:
+            self.predictor = build_sam2_video_predictor(model_cfg, sam_checkpoint_path)
+            logger.info("SAM2 Video Predictor 成功初始化.")
+        if flux_kontext_path is not None:
+            self.flux_kontext = FluxKontextPipeline.from_pretrained(flux_kontext_path, torch_dtype=torch.bfloat16).to("cuda")
+
         if flux_kontext_path is not None:
             self.flux_kontext = FluxKontextPipeline.from_pretrained(flux_kontext_path, torch_dtype=torch.bfloat16).to("cuda")
 
@@ -556,6 +571,72 @@ class WanDataPreprocessingStage(PipelineStage):
             detector_checkpoint=det_checkpoint_path,
             device=self.device,
         )
+
+    def get_mask(self, frames, th_step, kp2ds_all):
+        frame_num = len(frames)
+        if frame_num < th_step:
+            num_step = 1
+        else:
+            num_step = (frame_num + th_step) // th_step
+
+        all_mask = []
+        for index in range(num_step):
+            each_frames = frames[index * th_step:(index + 1) * th_step]
+    
+            kp2ds = kp2ds_all[index * th_step:(index + 1) * th_step]
+            if len(each_frames) > 4:
+                key_frame_num = 4
+            elif 4 >= len(each_frames) > 0:
+                key_frame_num = 1
+            else:
+                continue
+
+            key_frame_step = len(kp2ds) // key_frame_num
+            key_frame_index_list = list(range(0, len(kp2ds), key_frame_step))
+
+            key_points_index = [0, 1, 2, 5, 8, 11, 10, 13]
+            key_frame_body_points_list = []
+            for key_frame_index in key_frame_index_list:
+                keypoints_body_list = []
+                body_key_points = kp2ds[key_frame_index]['keypoints_body']
+                for each_index in key_points_index:
+                    each_keypoint = body_key_points[each_index]
+                    if None is each_keypoint:
+                        continue
+                    keypoints_body_list.append(each_keypoint)
+
+                keypoints_body = np.array(keypoints_body_list)[:, :2]
+                wh = np.array([[kp2ds[0]['width'], kp2ds[0]['height']]])
+                points = (keypoints_body * wh).astype(np.int32)
+                key_frame_body_points_list.append(points)
+
+            inference_state = self.predictor.init_state_v2(frames=each_frames)
+            self.predictor.reset_state(inference_state)
+            ann_obj_id = 1
+            for ann_frame_idx, points in zip(key_frame_index_list, key_frame_body_points_list):
+                labels = np.array([1] * points.shape[0], np.int32)
+                _, out_obj_ids, out_mask_logits = self.predictor.add_new_points(
+                    inference_state=inference_state,
+                    frame_idx=ann_frame_idx,
+                    obj_id=ann_obj_id,
+                    points=points,
+                    labels=labels,
+                )
+
+            video_segments = {}
+            for out_frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(inference_state):
+                video_segments[out_frame_idx] = {
+                    out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
+                    for i, out_obj_id in enumerate(out_obj_ids)
+                }
+
+            for out_frame_idx in range(len(video_segments)):
+                for out_obj_id, out_mask in video_segments[out_frame_idx].items():
+                    out_mask = out_mask[0].astype(np.uint8)
+                    all_mask.append(out_mask)
+
+        return all_mask
+    
 
     def forward(self, batch: Req, server_args: ServerArgs) -> Req:
         if self.pose2d is None:
@@ -589,7 +670,9 @@ class WanDataPreprocessingStage(PipelineStage):
         replace_flag = retarget_flag = (
             batch.retarget_flag if hasattr(batch, "replace_flag") else False
         )
+        replace_flag = True
         if replace_flag:
+            logger.info("进入replace模式")
             video_reader = VideoReader(video_path)
             frame_num = len(video_reader)
             video_fps = video_reader.get_avg_fps()
@@ -662,6 +745,11 @@ class WanDataPreprocessingStage(PipelineStage):
             batch.extra["face_video"] = face_images
             batch.extra["bg_video"] = bg_images
             batch.extra["mask_video"] = aug_masks
+
+            # if batch.debug and output_path is not None:
+            output_path = "/home/user/sglang_wan-animate/tmp/"
+            self._save_debug_videos(output_path, fps, face_images, cond_images)
+            self._save_debug_videos(output_path, fps, bg_images, aug_masks)
 
         else:
             # --- 2. Process Reference Image ---
