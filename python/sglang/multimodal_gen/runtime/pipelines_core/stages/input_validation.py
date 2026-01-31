@@ -338,13 +338,15 @@ class InputValidationStage(PipelineStage):
         if segment_len <= 0:
             raise ValueError("clip_len must be greater than refert_num")
 
-        pose_video = self.inputs_padding(pose_video, target_len)
-        face_video = self.inputs_padding(face_video, target_len)
-
+        logger.info(f"查看shape: cond video shape: {pose_video.shape}, face video shape: {face_video.shape}, refer video shape: {refer_video.shape}")
+        pose_video = self._inputs_padding(pose_video, target_len)
+        face_video = self._inputs_padding(face_video, target_len)
+        logger.info(f"查看padding后shape: cond video shape: {len(pose_video)}, face video shape: {len(face_video)}")
         if bg_path is not None and mask_path is not None:
             bg_video, mask_video = self.prepare_source_for_replace(src_bg_path=bg_path, src_mask_path=mask_path)
             bg_video_tensor = self._inputs_padding(bg_video, target_len)
             mask_video_tensor = self._inputs_padding(mask_video, target_len)
+            logger.info(f"查看padding后shape: bg video shape: {len(bg_video_tensor)}, mask video shape: {len(mask_video_tensor)}")
 
         batch.num_frames = target_len
         batch.extra["real_frame_len"] = real_frame_len
@@ -355,9 +357,9 @@ class InputValidationStage(PipelineStage):
         batch.extra["num_segments"] = target_len // segment_len
         batch.extra["cur_segment"] = 0
         logger.info(f"查看一下: pose_video长度{len(batch.extra.get('pose_video'))}, face_video长度{len(batch.extra.get('face_video'))}, num_segments: {batch.extra.get('num_segments')}")
-        logger.info(f"查看一下: mask_video长度{len(batch.extra.get('mask_video')) if batch.extra.get('mask_video') is not None else 'None'}, face_video形状{batch.extra.get('face_video')}, num_segments: {batch.extra.get('num_segments')}")
-        logger.info(f"查看一下: pose_video形状{batch.extra.get('pose_video').shape}, face_video形状{batch.extra.get('face_video').shape}")
-        logger.info(f"查看一下: mask_video形状{batch.extra.get('mask_video').shape if batch.extra.get('mask_video') is not None else 'None'}, face_video形状{batch.extra.get('face_video').shape}")
+        logger.info(f"查看一下: mask_video长度{len(batch.extra.get('mask_video')) if batch.extra.get('mask_video') is not None else 'None'}, face_video形状{len(batch.extra.get('face_video'))}")
+        logger.info(f"查看一下: pose_video形状{batch.extra.get('pose_video')[0].shape}, face_video形状{batch.extra.get('face_video')[0].shape}")
+        logger.info(f"查看一下: mask_video形状{batch.extra.get('mask_video')[0].shape if batch.extra.get('mask_video') is not None else 'None'}, face_video形状{batch.extra.get('face_video')[0].shape}")
         
 
     def forward(
