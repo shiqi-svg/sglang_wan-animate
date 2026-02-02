@@ -817,10 +817,10 @@ class WanDataPreprocessingStage(PipelineStage):
             # Initial Resize of Frames
             # Note: frames here are resized to match resolution area logic
             # You might want to resize them to match refer_img dimensions exactly if needed
-            # frames = [
-            #     resize_by_area(frame, default_height * default_width, divisor=16)
-            #     for frame in frames
-            # ]
+            frames = [
+                resize_by_area(frame, default_height * default_width, divisor=16)
+                for frame in frames
+            ]
 
             # --- 4. Extract Poses & Faces from Video ---
             logger.info("Extracting video poses")
