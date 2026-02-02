@@ -97,23 +97,19 @@ class WanAnimateConditioningStage(PipelineStage):
         latent_h: int,
         latent_w: int,
         mask_len: int = 1,
-        mask_pixel_values: torch.Tensor | None = None,
         dtype: torch.dtype = None,
         device: Union[str, torch.device] = "cuda",
     ) -> torch.Tensor:
         # mask_pixel_values shape (if supplied): [B, C = 1, T, latent_h, latent_w]
-        if mask_pixel_values is not None:
-            mask_lat_size = mask_pixel_values.to(device=device, dtype=dtype)
-        else:
-            mask_lat_size = torch.zeros(
-                batch_size,
-                1,
-                (latent_t - 1) * 4 + 1,
-                latent_h,
-                latent_w,
-                dtype=dtype,
-                device=device,
-            )
+        mask_lat_size = torch.zeros(
+            batch_size,
+            1,
+            (latent_t - 1) * 4 + 1,
+            latent_h,
+            latent_w,
+            dtype=dtype,
+            device=device,
+        )
         mask_lat_size[:, :, :mask_len] = 1
         first_frame_mask = mask_lat_size[:, :, 0:1]
         first_frame_mask = torch.repeat_interleave(first_frame_mask, dim=2, repeats=4)
@@ -139,8 +135,6 @@ class WanAnimateConditioningStage(PipelineStage):
         interpolation_mode: str = "bicubic",
         dtype=torch.float32,
         device="cuda",
-        bg_video: torch.Tensor | None = None,
-        mask_video: torch.Tensor | None = None,
     ) -> torch.Tensor:
         # prev_segment_cond_video shape: (B, C, T, H, W) in pixel space if supplied
         # background_video shape: (B, C, T, H, W) (same as prev_segment_cond_video shape)
@@ -198,45 +192,17 @@ class WanAnimateConditioningStage(PipelineStage):
             [prev_segment_cond_video, remaining_segment], dim=2
         )
 
-        if bg_video is not None:
-            assert (
-                bg_video.shape[2] == segment_frame_length
-            ), "bg_video must have segment_frame_length frames"
-            bg_video = bg_video.to(device=device, dtype=dtype)
-            if first_frame:
-                full_segment_cond_video = bg_video
-            else:
-                full_segment_cond_video = torch.cat(
-                    [prev_segment_cond_video, bg_video[:, :, prev_segment_cond_frames:]],
-                    dim=2,
-                )
-
         prev_segment_cond_latents = self.encode(
             full_segment_cond_video, batch, server_args
         )
 
         # Prepare I2V mask
-        mask_lat_size = None
-        if mask_video is not None:
-            mask_video = mask_video.to(device=device, dtype=dtype)
-            mask_video = mask_video.view(
-                batch_size * segment_frame_length, 1, segment_height, segment_width
-            )
-            mask_video = F.interpolate(
-                mask_video, size=(latent_height, latent_width), mode="nearest"
-            )
-            mask_video = mask_video.view(
-                batch_size, segment_frame_length, 1, latent_height, latent_width
-            ).transpose(1, 2)
-            mask_lat_size = 1 - mask_video
-
         prev_segment_cond_mask = self.get_i2v_mask(
             batch_size,
             num_latent_frames,
             latent_height,
             latent_width,
             mask_len=prev_segment_cond_frames if not first_frame else 0,
-            mask_pixel_values=mask_lat_size,
             dtype=dtype,
             device=device,
         )
@@ -246,34 +212,6 @@ class WanAnimateConditioningStage(PipelineStage):
             [prev_segment_cond_mask, prev_segment_cond_latents], dim=1
         )
         return prev_segment_cond_latents
-
-    def prepare_source(self, src_pose_path, src_face_path, src_ref_path):
-        pose_video_reader = VideoReader(src_pose_path)
-        pose_len = len(pose_video_reader)
-        pose_idxs = list(range(pose_len))
-        cond_images = pose_video_reader.get_batch(pose_idxs).asnumpy()
-
-        face_video_reader = VideoReader(src_face_path)
-        face_len = len(face_video_reader)
-        face_idxs = list(range(face_len))
-        face_images = face_video_reader.get_batch(face_idxs).asnumpy()
-        height, width = cond_images[0].shape[:2]
-        refer_images = try_load_image(src_ref_path)
-        refer_images = self.padding_resize(refer_images, height=height, width=width)
-        return cond_images, face_images, refer_images
-    
-    def prepare_source_for_replace(self, src_bg_path, src_mask_path):
-        bg_video_reader = VideoReader(src_bg_path)
-        bg_len = len(bg_video_reader)
-        bg_idxs = list(range(bg_len))
-        bg_images = bg_video_reader.get_batch(bg_idxs).asnumpy()
-
-        mask_video_reader = VideoReader(src_mask_path)
-        mask_len = len(mask_video_reader)
-        mask_idxs = list(range(mask_len))
-        mask_images = mask_video_reader.get_batch(mask_idxs).asnumpy()
-        mask_images = mask_images[:, :, :, 0] / 255
-        return bg_images, mask_images
 
     def forward(self, batch: Req, server_args: ServerArgs) -> Req:
         self.vae = self.vae.to(get_local_torch_device())
@@ -322,8 +260,6 @@ class WanAnimateConditioningStage(PipelineStage):
                 prev_segment_cond_frames=refert_num,
                 device=get_local_torch_device(),
                 dtype=pose_latents_no_ref.dtype,
-                bg_video=bg_video_tensor,
-                mask_video=mask_video_tensor,
             )
         )
 

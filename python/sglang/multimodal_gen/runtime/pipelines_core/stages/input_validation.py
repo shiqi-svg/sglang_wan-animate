@@ -352,8 +352,8 @@ class InputValidationStage(PipelineStage):
         batch.extra["real_frame_len"] = real_frame_len
         batch.extra["pose_video"] = pose_video
         batch.extra["face_video"] = face_video
-        batch.extra["bg_video"] = bg_video_tensor if bg_path is not None else None
-        batch.extra["mask_video"] = mask_video_tensor if mask_path is not None else None
+        batch.extra["bg_video"] = bg_video_tensor #if bg_path is not None else None
+        batch.extra["mask_video"] = mask_video_tensor #if mask_path is not None else None
         batch.extra["num_segments"] = target_len // segment_len
         batch.extra["cur_segment"] = 0
         logger.info(f"查看一下: pose_video长度{len(batch.extra.get('pose_video'))}, face_video长度{len(batch.extra.get('face_video'))}, num_segments: {batch.extra.get('num_segments')}")

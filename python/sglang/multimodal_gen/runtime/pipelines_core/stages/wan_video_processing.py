@@ -82,6 +82,33 @@ class WanVideoProcessor:
 
         return video_tensor
 
+    def preprocess_mask_video(
+        self,
+        video: List[PIL.Image.Image],
+        target_height: int | None = None,
+        target_width: int | None = None,
+    ) -> torch.Tensor:
+        if not isinstance(video, list):
+            video = [video]
+
+        video = self._resize_frames(video, target_height, target_width)
+
+        frames = []
+        for img in video:
+            arr = np.array(img)
+            if arr.ndim == 3:
+                arr = arr[:, :, 0]
+            tensor = torch.from_numpy(arr).float() / 255.0
+            tensor = tensor.unsqueeze(0)  # 1HW
+            frames.append(tensor)
+
+        video_tensor = torch.stack(frames, dim=1)
+
+        # (1, 1, T, H, W)
+        video_tensor = video_tensor.unsqueeze(0)
+
+        return video_tensor
+
 
 class VideoProcessingStage(PipelineStage):
     def __init__(self, vae_scale_factor: int = 8) -> None:
@@ -108,6 +135,24 @@ class VideoProcessingStage(PipelineStage):
             target_width=512,
         ).to(get_local_torch_device(), dtype=torch.float32)
         batch.extra["face_video"] = face_video_tensor
+
+        bg_video = batch.extra.get("bg_video")
+        if bg_video is not None:
+            bg_video_tensor = self.video_processor.preprocess_video(
+                bg_video,
+                target_height=batch.height,
+                target_width=batch.width,
+            ).to(get_local_torch_device(), dtype=torch.float32)
+            batch.extra["bg_video"] = bg_video_tensor
+
+        mask_video = batch.extra.get("mask_video")
+        if mask_video is not None:
+            mask_video_tensor = self.video_processor.preprocess_mask_video(
+                mask_video,
+                target_height=batch.height,
+                target_width=batch.width,
+            ).to(get_local_torch_device(), dtype=torch.float32)
+            batch.extra["mask_video"] = mask_video_tensor
 
         return batch
 
