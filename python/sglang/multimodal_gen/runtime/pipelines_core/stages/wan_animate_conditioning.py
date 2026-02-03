@@ -204,14 +204,14 @@ class WanAnimateConditioningStage(PipelineStage):
         if batch.extra.get("mask_pixel_values") is not None:
             # logger.info(f"查看类型：{type(batch.extra.get('mask_pixel_values'))}")
             logger.info(f"查看一下 mask_pixel_values shape: {batch.extra.get('mask_pixel_values').shape}")
-            mask_pixel_values = 1 - batch.extra.get("mask_pixel_values")
+            mask_pixel_values = batch.extra.get("mask_pixel_values")
             b, c, t, h, w = mask_pixel_values.shape
             mask_pixel_values = rearrange(mask_pixel_values, "b t c h w -> (b t) c h w")
             mask_pixel_values = F.interpolate(mask_pixel_values, size=(height//8, width//8), mode='nearest')
             mask_pixel_values = rearrange(mask_pixel_values, "(b t) c h w -> b t c h w", b=b)
             logger.info(f"查看一下 mask_pixel_values shape after resize: {mask_pixel_values.shape}")
             prev_segment_cond_mask = self.get_i2v_mask(batch_size,num_latent_frames, latent_height, latent_width, prev_segment_cond_frames if not first_frame else 0, 
-                                        device=self.device)
+                                        mask_pixel_values=mask_pixel_values, device=self.device)
         else:
             prev_segment_cond_mask = self.get_i2v_mask(
                 batch_size,
