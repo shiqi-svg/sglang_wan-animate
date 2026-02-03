@@ -104,9 +104,12 @@ class ImageEncodingStage(PipelineStage):
         Returns:
             The batch with encoded prompt embeddings.
         """
-
+        
         if batch.condition_image is None:
+            logger.info("没有condition_image，跳过ImageEncodingStage")
             return batch
+        logger.info(f"查看 batch.condition_image 类型: {type(batch.condition_image)}")
+        # logger.info(f"查看 batch.condition_image shape: {batch.condition_image.shape}")
         cuda_device = get_local_torch_device()
 
         self.load_model()

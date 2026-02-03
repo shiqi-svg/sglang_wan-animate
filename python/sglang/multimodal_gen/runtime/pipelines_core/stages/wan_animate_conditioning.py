@@ -3,7 +3,7 @@ from typing import Any, Union
 import torch
 import torch.nn.functional as F
 from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
-
+from einops import rearrange
 from sglang.multimodal_gen.runtime.distributed import get_local_torch_device
 from sglang.multimodal_gen.runtime.pipelines_core.schedule_batch import Req
 from sglang.multimodal_gen.runtime.pipelines_core.stages.base import PipelineStage
@@ -97,19 +97,17 @@ class WanAnimateConditioningStage(PipelineStage):
         latent_h: int,
         latent_w: int,
         mask_len: int = 1,
+        mask_pixel_values=None,
         dtype: torch.dtype = None,
         device: Union[str, torch.device] = "cuda",
     ) -> torch.Tensor:
         # mask_pixel_values shape (if supplied): [B, C = 1, T, latent_h, latent_w]
-        mask_lat_size = torch.zeros(
-            batch_size,
-            1,
-            (latent_t - 1) * 4 + 1,
-            latent_h,
-            latent_w,
-            dtype=dtype,
-            device=device,
-        )
+        logger.info(f"查看本来应该是什么尺寸:{torch.zeros(batch_size, 1, (latent_t-1) * 4 + 1, latent_h, latent_w, device=device).shape}")
+        if mask_pixel_values is None:
+            mask_lat_size = torch.zeros(batch_size, 1, (latent_t-1) * 4 + 1, latent_h, latent_w, device=device)
+        else:
+            mask_lat_size = mask_pixel_values.clone()
+        
         mask_lat_size[:, :, :mask_len] = 1
         first_frame_mask = mask_lat_size[:, :, 0:1]
         first_frame_mask = torch.repeat_interleave(first_frame_mask, dim=2, repeats=4)
@@ -160,6 +158,8 @@ class WanAnimateConditioningStage(PipelineStage):
         num_latent_frames = (segment_frame_length - 1) // 4 + 1 # 时间下采样 4 倍，再加参考帧,用于VAE
         latent_height = height // 8
         latent_width = width // 8
+        logger.info(f"segment_height: {segment_height}, segment_width: {segment_width}, height: {height}, width: {width}")
+        logger.info(f"latent_height: {latent_height}, latent_width: {latent_width}")
         if segment_height != height or segment_width != width:
             print(
                 f"Interpolating prev segment cond video from ({segment_width}, {segment_height}) to ({width}, {height})"
@@ -176,15 +176,19 @@ class WanAnimateConditioningStage(PipelineStage):
             ).transpose(1, 2)
 
         remaining_segment_frames = segment_frame_length - prev_segment_cond_frames
-        remaining_segment = torch.zeros(
-            batch_size,#wann没有这一栏
-            channels,
-            remaining_segment_frames,
-            height,
-            width,
-            dtype=dtype,
-            device=device,
-        )
+        if batch.extra.get("bg_pixel_values") is not None:
+            # If background video is provided, we need to account for it in the remaining frames
+            remaining_segment = batch.extra.get("bg_pixel_values")
+        else:
+            remaining_segment = torch.zeros(
+                batch_size,#wann没有这一栏
+                channels,
+                remaining_segment_frames,
+                height,
+                width,
+                dtype=dtype,
+                device=device,
+            )
 
         # Prepend the conditioning frames from the previous segment to the remaining segment video in the frame dim
         prev_segment_cond_video = prev_segment_cond_video.to(dtype=dtype)
@@ -194,18 +198,30 @@ class WanAnimateConditioningStage(PipelineStage):
 
         prev_segment_cond_latents = self.encode(
             full_segment_cond_video, batch, server_args
-        )
+        )#y_reft
 
         # Prepare I2V mask
-        prev_segment_cond_mask = self.get_i2v_mask(
-            batch_size,
-            num_latent_frames,
-            latent_height,
-            latent_width,
-            mask_len=prev_segment_cond_frames if not first_frame else 0,
-            dtype=dtype,
-            device=device,
-        )
+        if batch.extra.get("mask_pixel_values") is not None:
+            # logger.info(f"查看类型：{type(batch.extra.get('mask_pixel_values'))}")
+            logger.info(f"查看一下 mask_pixel_values shape: {batch.extra.get('mask_pixel_values').shape}")
+            mask_pixel_values = 1 - batch.extra.get("mask_pixel_values")
+            b, c, t, h, w = mask_pixel_values.shape
+            mask_pixel_values = rearrange(mask_pixel_values, "b t c h w -> (b t) c h w")
+            mask_pixel_values = F.interpolate(mask_pixel_values, size=(height//8, width//8), mode='nearest')
+            mask_pixel_values = rearrange(mask_pixel_values, "(b t) c h w -> b t c h w", b=b)
+            logger.info(f"查看一下 mask_pixel_values shape after resize: {mask_pixel_values.shape}")
+            prev_segment_cond_mask = self.get_i2v_mask(batch_size,num_latent_frames, latent_height, latent_width, prev_segment_cond_frames if not first_frame else 0, 
+                                        device=self.device)
+        else:
+            prev_segment_cond_mask = self.get_i2v_mask(
+                batch_size,
+                num_latent_frames,
+                latent_height,
+                latent_width,
+                mask_len=prev_segment_cond_frames if not first_frame else 0,
+                dtype=dtype,
+                device=device,
+            )
 
         # Prepend cond I2V mask to prev segment cond latents along channel dimension
         prev_segment_cond_latents = torch.cat(
