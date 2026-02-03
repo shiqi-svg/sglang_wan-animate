@@ -239,6 +239,17 @@ class PipelineConfig:
     def prepare_image_processor_kwargs(self, batch, neg=False):
         return {}
 
+    def get_i2v_mask(self, lat_t, lat_h, lat_w, mask_len=1, mask_pixel_values=None, device="cuda"):
+        if mask_pixel_values is None:
+            msk = torch.zeros(1, (lat_t-1) * 4 + 1, lat_h, lat_w, device=device)
+        else:
+            msk = mask_pixel_values.clone()
+        msk[:, :mask_len] = 1
+        msk = torch.concat([torch.repeat_interleave(msk[:, 0:1], repeats=4, dim=1), msk[:, 1:]], dim=1)
+        msk = msk.view(1, msk.shape[1] // 4, 4, lat_h, lat_w)
+        msk = msk.transpose(1, 2)[0]
+        return msk
+
     def postprocess_image_latent(self, latent_condition, batch):
         vae_arch_config = self.vae_config.arch_config
         spatial_compression_ratio = vae_arch_config.spatial_compression_ratio
@@ -266,6 +277,10 @@ class PipelineConfig:
         )
         mask_lat_size = mask_lat_size.transpose(1, 2)
         mask_lat_size = mask_lat_size.to(latent_condition.device)
+        mask_lat_size = self.get_i2v_mask(1, latent_height, latent_width, 1, device=latent_condition.device).unsqueeze(0)
+        logger.info(f"查看一下mask_lat_size的shape:{mask_lat_size.shape}")
+        logger.info(f"查看latent_condition的shape:{latent_condition.shape}")
+        
         image_latents = torch.concat([mask_lat_size, latent_condition], dim=1)
         return image_latents
 

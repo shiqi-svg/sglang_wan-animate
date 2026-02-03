@@ -109,6 +109,13 @@ class ImageEncodingStage(PipelineStage):
             logger.info("没有condition_image，跳过ImageEncodingStage")
             return batch
         logger.info(f"查看 batch.condition_image 类型: {type(batch.condition_image)}")
+        #batch.condition_image就是ref_img
+        # from pathlib import Path
+
+        # img = batch.condition_image  # PIL.Image.Image
+        # out_path = Path("/home/user/sglang_wan-animate/outputs/debug_condition_image.png")
+        # img.save(out_path)
+        
         # logger.info(f"查看 batch.condition_image shape: {batch.condition_image.shape}")
         cuda_device = get_local_torch_device()
 
@@ -144,7 +151,7 @@ class ImageEncodingStage(PipelineStage):
             neg_image_inputs = self.image_processor(
                 images=image, return_tensors="pt", **neg_image_processor_kwargs
             ).to(cuda_device)
-
+            
             with set_forward_context(current_timestep=0, attn_metadata=None):
                 outputs = self.text_encoder(
                     input_ids=image_inputs.input_ids,

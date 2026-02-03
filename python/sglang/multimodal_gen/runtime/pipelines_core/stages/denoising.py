@@ -980,6 +980,7 @@ class DenoisingStage(PipelineStage):
 
                         # Expand latents for I2V
                         latent_model_input = latents.to(target_dtype)
+                        logger.info(f"查看latent_model_input的shape:{latent_model_input.shape}")
                         if batch.image_latent is not None:
                             assert (
                                 not server_args.pipeline_config.task_type
@@ -991,10 +992,15 @@ class DenoisingStage(PipelineStage):
                             ):
                                 prev_segment_latent = batch.extra.get(
                                     "prev_segment_cond_latents"
-                                )
+                                )#[1, 20, 20, 96, 64]
+                                # mask_ref = batch.extra.get("i2v_mask")
+                                # logger.info(f"我看看图片对不对：{batch.image_latent.shape}")#[1, 20, 1, 96, 64]
+                                # logger.info(f"我看看mask对不对：{mask_ref.shape}") #[1, 20, 4, 96, 64]
+                                # logger.info(f"我看看prev_segment_latent对不对:{prev_segment_latent.shape}") #([1, 20, 20, 96, 64])
+                                # y_ref = torch.concat([mask_ref, batch.image_latent], dim=2) #([1, 20, 5, 96, 64])
                                 cond_latent = torch.cat(
                                     [batch.image_latent, prev_segment_latent], dim=2
-                                ).to(target_dtype)
+                                ).to(target_dtype) #[1, 20, 21, 96, 64]
                             else:
                                 cond_latent = batch.image_latent
                             latent_model_input = torch.cat(
