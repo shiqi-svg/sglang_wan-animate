@@ -47,6 +47,34 @@ class InputValidationStage(PipelineStage):
         super().__init__()
         self.vae_image_processor = vae_image_processor
 
+    @staticmethod
+    def _pad_resize_pil_image(
+        img: Image.Image,
+        target_width: int,
+        target_height: int,
+    ) -> Image.Image:
+        """Resize an image with aspect preserved and pad to target size.
+
+        This matches Wan2.2 reference behavior (padding_resize) and avoids
+        distorting the reference image when aligning to pose video resolution.
+        """
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        src_w, src_h = img.size
+        if src_w == target_width and src_h == target_height:
+            return img
+
+        scale = min(target_width / src_w, target_height / src_h)
+        new_w = max(1, int(round(src_w * scale)))
+        new_h = max(1, int(round(src_h * scale)))
+        resized = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+        canvas = Image.new("RGB", (target_width, target_height), (0, 0, 0))
+        left = (target_width - new_w) // 2
+        top = (target_height - new_h) // 2
+        canvas.paste(resized, (left, top))
+        return canvas
+
     def _generate_seeds(self, batch: Req, server_args: ServerArgs):
         """Generate seeds for the inference"""
         seed = batch.seed
@@ -80,6 +108,26 @@ class InputValidationStage(PipelineStage):
         preprocess condition image
         NOTE: condition image resizing is only allowed in InputValidationStage
         """
+        # Wan2.2-Animate: reference image should be aligned to pose video resolution
+        # (like upstream implementation), not resized by WanI2V480PConfig max_area.
+        if (
+            batch.condition_image is not None
+            and isinstance(server_args.pipeline_config, Wan2_2_Animate_14B_Config)
+        ):
+            if isinstance(batch.condition_image, list):
+                # WanAnimate uses a single reference image
+                batch.condition_image = batch.condition_image[0]
+
+            if batch.height is None or batch.width is None:
+                # Fall back to the image size if pose-derived size is not set.
+                batch.height = batch.condition_image.height
+                batch.width = batch.condition_image.width
+
+            batch.condition_image = self._pad_resize_pil_image(
+                batch.condition_image, target_width=batch.width, target_height=batch.height
+            )
+            return
+
         if batch.condition_image is not None and (
             server_args.pipeline_config.task_type == ModelTaskType.I2I
             or server_args.pipeline_config.task_type == ModelTaskType.TI2I
@@ -228,6 +276,20 @@ class InputValidationStage(PipelineStage):
             raise ValueError("refert_num must be 1 or 5")
 
         pose_video, face_video = self._load_wan_animate_videos(batch)
+        # Align output/reference resolution to pose video resolution (upstream behavior).
+        # The pose/face videos are typically lists of PIL images (from load_video)
+        # or numpy arrays (from WanDataPreprocessingStage).
+        if len(pose_video) > 0:
+            first = pose_video[0]
+            if isinstance(first, Image.Image):
+                pose_w, pose_h = first.size
+                batch.height = pose_h
+                batch.width = pose_w
+            elif isinstance(first, np.ndarray) and first.ndim >= 2:
+                pose_h, pose_w = int(first.shape[0]), int(first.shape[1])
+                batch.height = pose_h
+                batch.width = pose_w
+
         real_frame_len = len(pose_video)
         if real_frame_len == 0 or len(face_video) == 0:
             raise ValueError("pose_video and face_video must not be empty")
@@ -290,6 +352,11 @@ class InputValidationStage(PipelineStage):
                 f"Guidance scale must be positive, but got {batch.guidance_scale}"
             )
 
+        # Wan2.2-Animate: derive canonical (H, W) and segment metadata from pose/face videos
+        # before processing the reference image.
+        if isinstance(server_args.pipeline_config, Wan2_2_Animate_14B_Config):
+            self.verify_wan_animate(batch, server_args)
+
         # for i2v, get image from image_path
         # @TODO(Wei) hard-coded for wan2.2 5b ti2v for now. Should put this in image_encoding stage
         if batch.image_path is not None:
@@ -335,9 +402,6 @@ class InputValidationStage(PipelineStage):
             batch.height = batch.width * default_height // default_width
         elif batch.width is None:
             batch.width = batch.height * default_width // default_height
-
-        if isinstance(server_args.pipeline_config, Wan2_2_Animate_14B_Config):
-            self.verify_wan_animate(batch, server_args)
 
         return batch
 

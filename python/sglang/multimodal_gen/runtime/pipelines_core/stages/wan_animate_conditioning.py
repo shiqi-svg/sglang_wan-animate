@@ -234,9 +234,29 @@ class WanAnimateConditioningStage(PipelineStage):
             prev_segment_cond_video = (
                 batch.extra.get("all_frames")[:, :, -refert_num:].clone().detach()
             )
-            prev_segment_cond_video = prev_segment_cond_video * 2 - 1
+            # `all_frames` should be stored in pixel space. For Wan2.2-Animate reference
+            # implementation, the frames used for temporal conditioning are in [-1, 1].
+            # Older code paths may store [0, 1]; handle both.
+            if (
+                prev_segment_cond_video.dtype.is_floating_point
+                and prev_segment_cond_video.min() >= 0
+                and prev_segment_cond_video.max() <= 1
+            ):
+                prev_segment_cond_video = prev_segment_cond_video * 2 - 1
 
         pose_latents_no_ref = self.encode(pose_video_tensor, batch, server_args)
+
+        # Upstream reference casts conditioning tensors to bf16 before inference.
+        # Keep conditioning dtypes aligned with the main model dtype to reduce drift.
+        target_dtype = (
+            batch.prompt_embeds[0].dtype
+            if isinstance(batch.prompt_embeds, list)
+            and len(batch.prompt_embeds) > 0
+            and hasattr(batch.prompt_embeds[0], "dtype")
+            else pose_latents_no_ref.dtype
+        )
+        pose_latents_no_ref = pose_latents_no_ref.to(dtype=target_dtype)
+        face_video_tensor = face_video_tensor.to(dtype=target_dtype)
 
         batch.extra["pose_hidden_states"] = pose_latents_no_ref
         batch.extra["face_pixel_values"] = face_video_tensor

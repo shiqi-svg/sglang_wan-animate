@@ -150,8 +150,9 @@ class DecodingStage(PipelineStage):
             decode_output = self.vae.decode(latents)
             image = _ensure_tensor_decode_output(decode_output)
 
-        # De-normalize image to [0, 1] range
-        image = (image / 2 + 0.5).clamp(0, 1)
+        # NOTE: Return raw decoded frames in the model's pixel space (typically [-1, 1]).
+        # Downstream stages may need the unclamped values (e.g., WanAnimate segment stitching
+        # re-encodes previous decoded frames for temporal guidance).
         return image
 
     def load_model(self):
@@ -212,7 +213,7 @@ class DecodingStage(PipelineStage):
         # load vae if not already loaded (used for memory constrained devices)
         self.load_model()
 
-        frames = self.decode(batch.latents, server_args)
+        frames_raw = self.decode(batch.latents, server_args)
 
         # decode trajectory latents if needed
         if batch.return_trajectory_decoded:
@@ -235,15 +236,22 @@ class DecodingStage(PipelineStage):
 
             # Convert to list of tensors (per timestep) as expected by OutputBatch
             # Each element in list is [B, channels, frames, H_out, W_out]
-            trajectory_decoded = [decoded_tensor[:, i] for i in range(T)]
+            # Convert to [0, 1] for visualization/output consistency.
+            decoded_tensor_out = (decoded_tensor / 2 + 0.5).clamp(0, 1)
+            trajectory_decoded = [decoded_tensor_out[:, i] for i in range(T)]
         else:
             trajectory_decoded = None
 
-        frames, early_batch = server_args.pipeline_config.postprocess_decoded_frames(
-            batch, frames
+        # For some pipelines (e.g., WanAnimate), postprocess_decoded_frames stores frames
+        # for stitching and future re-encoding. Keep raw [-1, 1] there.
+        frames_raw, early_batch = server_args.pipeline_config.postprocess_decoded_frames(
+            batch, frames_raw
         )
         if early_batch is not None:
             return early_batch
+
+        # Convert to [0, 1] for final output.
+        frames = (frames_raw / 2 + 0.5).clamp(0, 1)
 
         # Convert to CPU float32 for compatibility
         frames = frames.cpu().float()

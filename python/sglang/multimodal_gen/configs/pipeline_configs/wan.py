@@ -246,7 +246,9 @@ class Wan2_2_Animate_14B_Config(WanI2V480PConfig):
         return neg_kwargs
 
     def post_denoising_loop(self, latents, batch):
-        return latents[:, :, self.refert_num :]
+        # Upstream Wan2.2-Animate decodes `x0[:, 1:]` (drop the reference latent frame)
+        # and then trims overlap (`refert_num`) in pixel space when stitching segments.
+        return latents[:, :, 1:]
 
     def postprocess_decoded_frames(self, batch, frames):
         print("Decoding stage: handling WanAnimate segment stitching.")
