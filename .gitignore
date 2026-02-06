@@ -183,7 +183,7 @@ tmp*.txt
 tl_out/
 
 # Plots
-*.png
+# *.png
 *.pdf
 
 # personnal
