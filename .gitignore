@@ -248,7 +248,7 @@ lmms-eval
 **/.claude/
 **/.serena/
 ctags/
-outputs/
+# outputs/
 
 # Eval Cache
 .longbench_cache/
