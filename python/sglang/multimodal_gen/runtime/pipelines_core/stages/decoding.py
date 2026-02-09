@@ -133,14 +133,31 @@ class DecodingStage(PipelineStage):
             latents, server_args, vae=self.vae
         )
 
-        # Decode latents
+        image = self._decode_raw(latents, server_args, vae_dtype, vae_autocast_enabled)
+
+        # De-normalize image to [0, 1] range
+        image = (image / 2 + 0.5).clamp(0, 1)
+        return image
+
+    def _decode_raw(
+        self,
+        latents: torch.Tensor,
+        server_args: ServerArgs,
+        vae_dtype: torch.dtype,
+        vae_autocast_enabled: bool,
+    ) -> torch.Tensor:
+        """Decode latents to raw VAE output (typically in [-1,1]) without clamping.
+
+        Used by WanAnimate to feed previous decoded frames back into VAE.encode without
+        information loss from clamping.
+        """
+
         with torch.autocast(
             device_type=current_platform.device_type,
             dtype=vae_dtype,
             enabled=vae_autocast_enabled,
         ):
             try:
-                # TODO: make it more specific
                 if server_args.pipeline_config.vae_tiling:
                     self.vae.enable_tiling()
             except Exception:
@@ -150,8 +167,6 @@ class DecodingStage(PipelineStage):
             decode_output = self.vae.decode(latents)
             image = _ensure_tensor_decode_output(decode_output)
 
-        # De-normalize image to [0, 1] range
-        image = (image / 2 + 0.5).clamp(0, 1)
         return image
 
     def load_model(self):
@@ -212,7 +227,34 @@ class DecodingStage(PipelineStage):
         # load vae if not already loaded (used for memory constrained devices)
         self.load_model()
 
-        frames = self.decode(batch.latents, server_args)
+        # Decode once to raw space, and keep it around for pipelines that need
+        # to re-encode overlapping frames (e.g., WanAnimate).
+        latents_for_decode = batch.latents
+        self.vae = self.vae.to(get_local_torch_device())
+        latents_for_decode = latents_for_decode.to(get_local_torch_device())
+
+        vae_dtype = PRECISION_TO_TYPE[server_args.pipeline_config.vae_precision]
+        vae_autocast_enabled = (
+            vae_dtype != torch.float32
+        ) and not server_args.disable_autocast
+
+        latents_for_decode = self.scale_and_shift(latents_for_decode, server_args)
+        latents_for_decode = server_args.pipeline_config.preprocess_decoding(
+            latents_for_decode, server_args, vae=self.vae
+        )
+
+        raw_frames = self._decode_raw(
+            latents_for_decode,
+            server_args,
+            vae_dtype=vae_dtype,
+            vae_autocast_enabled=vae_autocast_enabled,
+        )
+
+        # Stash raw frames for pipeline_config stitching if needed.
+        batch.extra["_decoded_frames_raw"] = raw_frames
+
+        # Output frames in [0,1] for downstream output and saving.
+        frames = (raw_frames / 2 + 0.5).clamp(0, 1)
 
         # decode trajectory latents if needed
         if batch.return_trajectory_decoded:

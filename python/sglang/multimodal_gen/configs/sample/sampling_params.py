@@ -94,6 +94,13 @@ class SamplingParams:
     face_video_path: str | None = None
     video_path: str | None = None
 
+    # Wan2.2 Animate replacement-mode inputs
+    # - replace_flag enables conditioning with background+mask (src_bg/src_mask)
+    # - bg_video_path/mask_video_path point to precomputed videos (e.g. from Wan2.2 Lightning preprocess)
+    replace_flag: bool = False
+    bg_video_path: str | None = None
+    mask_video_path: str | None = None
+
     # Text inputs
     prompt: str | list[str] | None = None
     negative_prompt: str = (
@@ -584,6 +591,24 @@ class SamplingParams:
             type=str,
             default=SamplingParams.face_video_path,
             help="Path to input face video for wan animate generation",
+        )
+        parser.add_argument(
+            "--replace-flag",
+            action="store_true",
+            default=SamplingParams.replace_flag,
+            help="Enable Wan2.2 Animate replacement mode (expects bg/mask videos)",
+        )
+        parser.add_argument(
+            "--bg-video-path",
+            type=str,
+            default=SamplingParams.bg_video_path,
+            help="Path to replacement background video (e.g. src_bg.mp4)",
+        )
+        parser.add_argument(
+            "--mask-video-path",
+            type=str,
+            default=SamplingParams.mask_video_path,
+            help="Path to replacement mask video (e.g. src_mask.mp4)",
         )
         parser.add_argument(
             "--moba-config-path",

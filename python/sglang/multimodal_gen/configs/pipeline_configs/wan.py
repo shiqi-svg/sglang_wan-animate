@@ -218,6 +218,22 @@ class Wan2_2_Animate_14B_Config(WanI2V480PConfig):
 
     def postprocess_decoded_frames(self, batch, frames):
         print("Decoding stage: handling WanAnimate segment stitching.")
+
+        # Preserve unclamped frames in [-1,1] for overlap conditioning.
+        # DecodingStage stashes the raw VAE output under this key.
+        raw_frames = batch.extra.get("_decoded_frames_raw")
+        if raw_frames is not None:
+            if batch.extra.get("all_frames_raw") is None:
+                batch.extra["all_frames_raw"] = raw_frames
+            else:
+                batch.extra["all_frames_raw"] = torch.cat(
+                    (
+                        batch.extra.get("all_frames_raw"),
+                        raw_frames[:, :, self.refert_num :],
+                    ),
+                    dim=2,
+                )
+
         if batch.extra.get("all_frames") is None:
             batch.extra["all_frames"] = frames
         else:

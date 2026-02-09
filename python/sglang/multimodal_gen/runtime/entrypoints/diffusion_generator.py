@@ -227,6 +227,10 @@ class DiffGenerator:
                     logger, req.prompt, request_idx + 1, len(requests)
                 ) as timer:
                     output_batch = self._send_to_scheduler_and_wait_for_response([req])
+                    if output_batch is None:
+                        raise RuntimeError(
+                            "Scheduler returned no response (None). See server logs above for the root error."
+                        )
                     if output_batch.error:
                         raise Exception(f"{output_batch.error}")
 
@@ -268,6 +272,15 @@ class DiffGenerator:
                         }
                         results.append(result_item)
             except Exception:
+                # For a single-request run (common CLI usage), surface the real
+                # exception instead of silently continuing and returning None.
+                if len(requests) == 1:
+                    raise
+                logger.exception(
+                    "Failed to generate output for prompt %d/%d",
+                    request_idx + 1,
+                    len(requests),
+                )
                 continue
 
         total_gen_time = time.perf_counter() - total_start_time

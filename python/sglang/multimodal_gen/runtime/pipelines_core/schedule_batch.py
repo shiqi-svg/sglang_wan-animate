@@ -56,10 +56,15 @@ class Req:
     # Video input paths (pose / face) used by animate pipelines
     pose_video_path: str | None = None
     face_video_path: str | None = None
+    # Replacement-mode video inputs (background / mask) used by WanAnimate
+    # Aligns with Wan2.2 Lightning replacement preprocessing outputs: src_bg.mp4 / src_mask.mp4
+    bg_video_path: str | None = None
+    mask_video_path: str | None = None
     video_path: str | None = None
     # For preprocessed video inputs (e.g., WanAnimate)
     retarget_flag: bool = False
     use_flux: bool = False
+    replace_flag: bool = False
 
     # Image encoder hidden states
     image_embeds: list[torch.Tensor] = field(default_factory=list)

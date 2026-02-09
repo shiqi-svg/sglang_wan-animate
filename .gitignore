@@ -248,7 +248,7 @@ lmms-eval
 **/.claude/
 **/.serena/
 ctags/
-outputs/
+# outputs/
 
 # Eval Cache
 .longbench_cache/
@@ -258,3 +258,6 @@ outputs/
 *.nsys-rep
 *.ncu-rep
 *.nvcudmp
+
+/Wan2.2-Animate-14B
+/Wan2.1-I2V-14B-720P

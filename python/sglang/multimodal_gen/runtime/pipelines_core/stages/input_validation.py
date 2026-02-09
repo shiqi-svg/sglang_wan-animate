@@ -221,6 +221,33 @@ class InputValidationStage(PipelineStage):
 
         return pose_video, face_video
 
+    @staticmethod
+    def _load_wan_animate_replace_videos(batch: Req):
+        """Load replacement-mode (background + mask) videos.
+
+        Expected inputs align with Wan2.2 Lightning replacement preprocessing outputs:
+        - src_bg.mp4  -> bg_video (RGB frames)
+        - src_mask.mp4 -> mask_video (RGB frames but semantically single-channel mask)
+
+        Mask normalization to [0,1] happens downstream in VideoProcessingStage.
+        """
+
+        if batch.bg_video_path is not None or batch.mask_video_path is not None:
+            if batch.bg_video_path is None or batch.mask_video_path is None:
+                raise ValueError(
+                    "bg_video_path and mask_video_path must both be provided for replace_flag"
+                )
+            return load_video(batch.bg_video_path), load_video(batch.mask_video_path)
+
+        bg_video = batch.extra.get("bg_video")
+        mask_video = batch.extra.get("mask_video")
+        if bg_video is None or mask_video is None:
+            raise ValueError(
+                "bg_video and mask_video must be provided when replace_flag is True"
+            )
+
+        return bg_video, mask_video
+
     def verify_wan_animate(self, batch: Req, server_args: ServerArgs) -> None:
         config = server_args.pipeline_config
         refert_num = config.refert_num
@@ -242,6 +269,16 @@ class InputValidationStage(PipelineStage):
         batch.extra["real_frame_len"] = real_frame_len
         batch.extra["pose_video"] = self._inputs_padding(pose_video, target_len)
         batch.extra["face_video"] = self._inputs_padding(face_video, target_len)
+
+        # Replacement-mode videos (bg/mask) follow the same padding rule.
+        # Only required when replace_flag is enabled.
+        if getattr(batch, "replace_flag", False):
+            bg_video, mask_video = self._load_wan_animate_replace_videos(batch)
+            if len(bg_video) == 0 or len(mask_video) == 0:
+                raise ValueError("bg_video and mask_video must not be empty")
+            batch.extra["bg_video"] = self._inputs_padding(bg_video, target_len)
+            batch.extra["mask_video"] = self._inputs_padding(mask_video, target_len)
+
         batch.extra["num_segments"] = target_len // segment_len
         batch.extra["cur_segment"] = 0
 
