@@ -136,7 +136,7 @@ class DecodingStage(PipelineStage):
         image = self._decode_raw(latents, server_args, vae_dtype, vae_autocast_enabled)
 
         # De-normalize image to [0, 1] range
-        image = (image / 2 + 0.5).clamp(0, 1)
+        # image = (image / 2 + 0.5).clamp(0, 1)
         return image
 
     def _decode_raw(
@@ -277,15 +277,20 @@ class DecodingStage(PipelineStage):
 
             # Convert to list of tensors (per timestep) as expected by OutputBatch
             # Each element in list is [B, channels, frames, H_out, W_out]
-            trajectory_decoded = [decoded_tensor[:, i] for i in range(T)]
+            # trajectory_decoded = [decoded_tensor[:, i] for i in range(T)]
+            decoded_tensor_out = (decoded_tensor / 2 + 0.5).clamp(0, 1)
+            trajectory_decoded = [decoded_tensor_out[:, i] for i in range(T)]
         else:
             trajectory_decoded = None
 
-        frames, early_batch = server_args.pipeline_config.postprocess_decoded_frames(
-            batch, frames
+        frames_raw, early_batch = server_args.pipeline_config.postprocess_decoded_frames(
+            batch, raw_frames
         )
         if early_batch is not None:
             return early_batch
+
+        # Convert to [0, 1] for final output.
+        frames = (frames_raw / 2 + 0.5).clamp(0, 1)
 
         # Convert to CPU float32 for compatibility
         frames = frames.cpu().float()

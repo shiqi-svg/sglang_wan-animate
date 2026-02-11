@@ -351,7 +351,12 @@ class WanAnimateConditioningStage(PipelineStage):
                 prev_segment_cond_video = (
                     batch.extra.get("all_frames")[:, :, -refert_num:].clone().detach()
                 )
-                prev_segment_cond_video = prev_segment_cond_video * 2 - 1
+                if (
+                    prev_segment_cond_video.dtype.is_floating_point
+                    and prev_segment_cond_video.min() >= 0
+                    and prev_segment_cond_video.max() <= 1
+                ):
+                    prev_segment_cond_video = prev_segment_cond_video * 2 - 1
             else:
                 prev_segment_cond_video = (
                     prev_segment_cond_video[:, :, -refert_num:].clone().detach()
