@@ -10,6 +10,10 @@ We support **Wan2.2 animate** on **SGLang** and make some acceleration on Wan2.2
 
 
 
+https://github.com/user-attachments/assets/18635538-56f0-4a0a-9027-bfe0a7da71ec
+
+
+
 <br>
 
 ## 📦 Function Support Plan
@@ -103,7 +107,7 @@ We provide **Adaptive Dynamic Frame Segmentation** and **Thread-Pool-Based Concu
 <div align="center">
   <img src="assets/sglang_no_replace.png" width="100%">
 </div>
-For more details, Please see [s](/blog.md)
+For more details, Please see [blog.md](https://github.com/shiqi-svg/sglang_wan-animate/blob/new_no_replace/blog.md)
 
 ## **Acknowledgement**
 
