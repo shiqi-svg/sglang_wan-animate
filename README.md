@@ -52,7 +52,8 @@ pip install -e "python[diffusion]"
 ```
 
 ## Use Yotta Platform
-We have deployed a ready-to-use edition on [Yotta Labs](https://docs.yottalabs.ai/yotta-labs/products/gpu-pods)
+We have deployed a ready-to-use edition on [Yotta Labs](https://docs.yottalabs.ai/yotta-labs/products/gpu-pods).
+
 For a simpe start, you can use it through the following steps:
 <div align="center">
   <img src="assets/step1.png" width="100%">
