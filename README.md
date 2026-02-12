@@ -107,7 +107,7 @@ We provide **Adaptive Dynamic Frame Segmentation** and **Thread-Pool-Based Concu
 <div align="center">
   <img src="assets/sglang_no_replace.png" width="100%">
 </div>
-For more details, Please see [blog.md](https://github.com/shiqi-svg/sglang_wan-animate/blob/new_no_replace/blog.md)
+For more details, Please see [here](https://github.com/shiqi-svg/sglang_wan-animate/blob/new_no_replace/blog.md)
 
 ## **Acknowledgement**
 
