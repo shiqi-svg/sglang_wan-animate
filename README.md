@@ -1,5 +1,5 @@
 # SGLang Animate For WAN2.2: Acceleration 
-[**Paper**](https://arxiv.org/abs/2602.06036) | [**Blog**](https://z-lab.ai/projects/dflash/) | [**Models**](https://huggingface.co/collections/z-lab/dflash)
+[**Blog**](https://github.com/shiqi-svg/sglang_wan-animate/blob/new_no_replace/blog.md)
 
 We support **Wan2.2 animate** on **SGLang** and make some acceleration on Wan2.2 so that achieve faster speed.
 <br>
