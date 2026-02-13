@@ -13,23 +13,16 @@
 
 ## 1. Introduction & Problem Definition
 
-The original Wan project suffered from a significant generation speed bottleneck ( minutes), which severely limited its application in production environments. Our objective is to compress the generation time to the minute level through algorithmic optimization (preprocessing strategies) and system-level optimization (inference acceleration). This article details an adaptive dynamic frame segmentation algorithm and presents a performance comparison between the NVIDIA H200 and AMD flagship accelerators.
+1. Introduction & Problem DefinitionThe original Wan project suffered from a significant generation speed bottleneck ($>20$ minutes), which severely limited its application in production environments. Our objective is to compress the generation time to the minute level through algorithmic optimization (preprocessing strategies) and system-level optimization (inference acceleration). This article details an adaptive dynamic frame segmentation algorithm and presents a performance comparison between the NVIDIA H200 and AMD flagship accelerators.
 
 The generation process is abstracted into a two-stage serial pipeline:
 
-* **Preprocess:** Input video/reference image  Keypoints/Human Pose, Bounding Boxes (bbox), Alignment information, etc. (Includes components like YOLO + ViTPose).
+* **Preprocess:** Preprocess: Input video/reference image $\rightarrow$ Keypoints/Human Pose, Bounding Boxes (bbox), Alignment information, etc. (Includes components like YOLO + ViTPose).
 
 
-* **Inference:** The diffusion/generation backbone (e.g., DiT) generates frames segment-by-segment using a sliding window strategy, followed by concatenation/overlap processing.
+* **Inference:** Inference: The diffusion/generation backbone (e.g., DiT) generates frames segment-by-segment using a sliding window strategy, followed by concatenation/overlap processing.
 
-
-
-Therefore, the end-to-end latency can be expressed as:
-
-
-
-
-The optimization goal is to simultaneously reduce  and  without significantly sacrificing quality.
+Therefore, the end-to-end latency can be expressed as:$$T_{total} = T_{pre} + T_{inf}$$The optimization goal is to simultaneously reduce $T_{pre}$ and $T_{inf}$ without significantly sacrificing quality.
 
 ---
 
@@ -41,7 +34,7 @@ The optimization goal is to simultaneously reduce  and  without significantly sa
 
 Inference utilizes a sliding window strategy defined by `clip_len` and `overlap`. To satisfy concatenation divisibility and stride constraints, the actual `target_frames` generated often exceed the `real_frames`, resulting in computational redundancy:
 
-
+$target = real + [(clip - overlap) - (real - overlap) \pmod{(clip - overlap)}]$
 
 
 **The Issue:** When `real - overlap` cannot be perfectly divided by the stride (`clip - overlap`), the sequence is padded to the nearest divisible length, causing the generation of useless frames and a linear increase in computational overhead.
@@ -50,18 +43,18 @@ Inference utilizes a sliding window strategy defined by `clip_len` and `overlap`
 
 In long video generation tasks, segmenting long sequences into clips that the model can process is a critical issue. Traditional fixed-stride segmentation often leads to wasted edge frames or computational redundancy. We propose a reverse derivation strategy based on the target frame count.
 
-Let  be the total target frames,  be the length of a single clip,  be the overlap between adjacent clips, and  be the number of segments. To ensure temporal continuity and maximize coverage, we establish the following constraint equation:
+Let $L_{target}$ be the total target frames, $L_{clip}$ be the length of a single clip, $L_{op}$ be the overlap between adjacent clips, and $n$ be the number of segments. To ensure temporal continuity and maximize coverage, we establish the following constraint equation:
 
+$$L_{target} = L_{clip} + (L_{clip} - L_{op}) \times n$$
 
-
-
-Where  and is an integer. In engineering practice, we limit the upper bound of  based on VRAM capacity (Memory Budget), for example, . Through this method, we effectively reduce  latency.
+Where $n \ge 0$ represents we need to perdorm $n-1$ times inference through diffusion method and is an integer. In engineering practice, we limit the upper bound of $L_{clip}$ based on VRAM capacity (Memory Budget), for example, $L_{clip} \le 100$. Through this method, we effectively reduce $T_{inf}$ latency.
 
 #### 2.1.3 In-Depth Analysis
 
-By implementing `auto_set_lim` via code, we can dynamically solve for the optimal  and  for any arbitrary . The advantages of this approach include:
+By implementing `auto_set_lim` via code, we can dynamically solve for the optimal $L_{clip}$ and $n$ for any arbitrary $L_{target}$. The advantages of this approach include:
 
-* **Maximization of VRAM Utilization:** Dynamically adjusting the clip length to fill computational cores avoids idle computing power caused by padding. The essence of this algorithm is to maximize **Computational Density**. By dynamically solving for , we eliminate the **Pipeline Bubbles** introduced by padding in traditional methods, ensuring that the GPU's Tensor Cores remain in a saturated computational state at every Time Step.
+
+* **Maximization of VRAM Utilization:** Dynamically adjusting the clip length to fill computational cores avoids idle computing power caused by padding. The essence of this algorithm is to maximize **Computational Density**. By dynamically solving for $L_{clip}$, we eliminate the **Pipeline Bubbles** introduced by padding in traditional methods, ensuring that the GPU's Tensor Cores remain in a saturated computational state at every Time Step.
 
 
 * **Temporal Consistency:** It guarantees a fixed overlap, making the video context smoother during concatenation.
@@ -74,10 +67,9 @@ We describe this optimization as breaking the **Pseudo-Dependency** between fram
 
 #### 2.2.1 Problem Modeling: The Serial Bottleneck
 
-In the baseline implementation, the preprocessing pipeline (specifically 2D pose estimation and frame extraction) operates as a strict sequential synchronous process. Mathematically, for a video sequence containing  frames, the total preprocessing latency  is determined by the cumulative sum of single-frame processing times:
+In the baseline implementation, the preprocessing pipeline (specifically 2D pose estimation and frame extraction) operates as a strict sequential synchronous process. Mathematically, for a video sequence containing $N$ frames, the total preprocessing latency $T_{pre}$ is determined by the cumulative sum of single-frame processing times:
 
-
-
+$$T_{pre} = \sum_{i=1}^{N} (t_{decode}^{(i)} + t_{inference}^{(i)})$$
 
 Under this serial execution model, host CPU utilization is severely limited by single-core performance metrics. Crucially, this introduces significant pipeline bubbles, causing the downstream video generation model to remain idle while waiting for the entire sequence preprocessing to complete.
 
@@ -85,12 +77,15 @@ Under this serial execution model, host CPU utilization is severely limited by s
 
 To address this mixed bottleneck of I/O-intensive and compute-intensive tasks, we refactored the preprocessing module using a **Thread Pool Executor** pattern, achieving coarse-grained **Task-Level Parallelism (TLP)**.
 
-Unlike the sequential execution method, we decoupled the inter-frame dependencies. By instantiating a thread pool of size  (where  is a constant), we transformed the execution model into a concurrent paradigm. This allows multiple 2D pose (`pose2d`) inference tasks—typically executed by C-bound libraries (e.g., OpenCV, PyTorch) that release the Python Global Interpreter Lock (GIL)—to execute in parallel on different physical cores.
+nlike the sequential execution method, we decoupled the inter-frame dependencies. By instantiating a thread pool of size $K$ (where $K$ is a constant), we transformed the execution model into a concurrent paradigm. This allows multiple 2D pose (`pose2d`) inference tasks—typically executed by C-bound libraries (e.g., OpenCV, PyTorch) that release the Python Global Interpreter Lock (GIL)—to execute in parallel on different physical cores.
+
+This improvement effectively transforms the latency formula to:$$T_{pre}' \approx \frac{1}{\min(N, K)} \sum_{i=1}^{N} (t_{process}^{(i)}) + T_{overhead}$$Where $T_{overhead}$ represents the minimal overhead of context switching and thread management.
 
 This improvement effectively transforms the latency formula to:
 
+$$T_{pre}' \approx \frac{1}{\min(N, K)} \sum_{i=1}^{N} (t_{process}^{(i)}) + T_{overhead}$$
 
-Where  represents the minimal overhead of context switching and thread management.
+Where $T_{overhead}$ represents the minimal overhead of context switching and thread management.
 
 *Note on Multi-GPU:* Multi-card setups (FSDP + ulysses_size, etc.) introduce additional communication, thread scheduling, and synchronization overhead. Reports indicate that running the original preprocessing flow in a multi-card environment actually slowed it down (up to ~170s), exhibiting typical resource contention/synchronization amplification. Therefore, additional restrictions were implemented to force preprocessing to run under single-card conditions even in multi-card environments.
 
@@ -101,7 +96,7 @@ Where  represents the minimal overhead of context switching and thread managemen
 
 
 
-* **Saturation of Host Compute Capacity:** By concurrently distributing  frames, we maximize the host CPU's **Instruction-Level Parallelism (ILP)** and memory bandwidth utilization. This strategy shifts the bottleneck from single-thread clock speed to overall multi-core throughput, significantly reducing preprocessing time from 229s to 78s, effectively approaching the theoretical limit defined by **Amdahl's Law** for the parallelizable portion of the workload.
+* **Saturation of Host Compute Capacity:** By concurrently distributing $N$ frames, we maximize the host CPU's **Instruction-Level Parallelism (ILP)** and memory bandwidth utilization. This strategy shifts the bottleneck from single-thread clock speed to overall multi-core throughput, significantly reducing preprocessing time from 229s to 78s, effectively approaching the theoretical limit defined by **Amdahl's Law** for the parallelizable portion of the workload.
 
 
 
@@ -144,7 +139,7 @@ By implementing the aforementioned optimizations, we achieved significant perfor
 * **Inference:** Time reduced from 129s to 79s (↓38.7%).
 
 
-* **Total Generation Time:** Reduced from  minutes (and a baseline of 325s) to 212s.
+* **Total Generation Time:** Reduced from $>20$ minutes (and a baseline of 325s) to 212s.
 
 
 
@@ -163,9 +158,7 @@ Tests were conducted using the same image and video inputs:
 
 **Analysis:**
 
-* **VRAM Advantage:** We must highlight whether AMD's larger VRAM (192GB) allowed for a larger , thereby reducing the segment count  and total inference time.
-
-
+* **VRAM Advantage:** We must highlight whether AMD's larger VRAM (192GB) allowed for a larger $L_{clip}$, thereby reducing the segment count $n$ and total inference time.
 
 #### 3.1.3 Acceleration Effects with SGLang
 
@@ -236,20 +229,19 @@ Through algorithmic dynamic segmentation and engineering pipeline improvements, 
 
 In traditional long video generation, fixed Stride and Window Size are commonly used. While simple, this leads to tail Padding (invalid computation) or context loss when processing non-divisible frame counts. We redefined this as a **Constrained Discrete Optimization Problem**:
 
-1. **Mathematical Modeling:** Find a parameter set  such that the total covered frames strictly equal the user input , while satisfying VRAM constraints.
+1. **Mathematical Modeling:** Find a parameter set $\{L_{clip}, n\}$ such that the total covered frames strictly equal the user input $L_{target}$, while satisfying VRAM constraints.
 
-
-2. **Core Constraint:** .
+2. **Core Constraint:** $L_{target} = L_{clip} + (L_{clip} - L_{op}) \times n$.
 
 
 3. **Variables:**
-*  Window length of a single inference (constrained by ).
+* $L_{clip}$: Window length of a single inference (constrained by $VRAM_{capacity}$).
 
 
-* Minimum overlapping frames required for temporal continuity (Temporal Overlap Constraint).
+* $L_{op}$: Minimum overlapping frames required for temporal continuity (Temporal Overlap Constraint).
 
 
-* Non-negative integer representing the number of sliding windows.
+* $n$: Non-negative integer representing the number of sliding windows.
 
 
 
@@ -258,7 +250,7 @@ In traditional long video generation, fixed Stride and Window Size are commonly 
 
 
 
-> **Technical Consideration:** The influence of  (overlap frames) on **Temporal Consistency** is critical. Specifically, how latent representations in the overlap region are fused is a key factor for review.
+> **Technical Consideration:** The influence of $L_{op}$ (overlap frames)  on **Temporal Consistency** is critical. Specifically, how latent representations in the overlap region are fused is a key factor for review.
 > 
 > 
 
@@ -286,4 +278,4 @@ When comparing NVIDIA H200 and AMD MI300X, **Memory Bandwidth** is often the dec
 2. **Roofline Model Analysis:** In the Wan model, due to the large Context Window, Arithmetic Intensity might not reach the Tensor Core limit; thus, high bandwidth directly yields linear speedups in inference.
 
 
-3. **FP8 Quantization:** The H200's native FP8 support (4th Gen Tensor Core) allows halving the KV Cache memory footprint. This enables a larger  (effective Batch Size) under the same VRAM budget, directly increasing **Throughput**.
+3. **FP8 Quantization:** The H200's native FP8 support (4th Gen Tensor Core) allows halving the KV Cache memory footprint. This enables a larger $L_{clip}$ (effective Batch Size) under the same VRAM budget, directly increasing **Throughput**.
