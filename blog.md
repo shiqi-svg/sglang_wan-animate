@@ -77,7 +77,7 @@ Under this serial execution model, host CPU utilization is severely limited by s
 
 To address this mixed bottleneck of I/O-intensive and compute-intensive tasks, we refactored the preprocessing module using a **Thread Pool Executor** pattern, achieving coarse-grained **Task-Level Parallelism (TLP)**.
 
-nlike the sequential execution method, we decoupled the inter-frame dependencies. By instantiating a thread pool of size $K$ (where $K$ is a constant), we transformed the execution model into a concurrent paradigm. This allows multiple 2D pose (`pose2d`) inference tasks—typically executed by C-bound libraries (e.g., OpenCV, PyTorch) that release the Python Global Interpreter Lock (GIL)—to execute in parallel on different physical cores.
+Unlike the sequential execution method, we decoupled the inter-frame dependencies. By instantiating a thread pool of size $K$ (where $K$ is a constant), we transformed the execution model into a concurrent paradigm. This allows multiple 2D pose (`pose2d`) inference tasks—typically executed by C-bound libraries (e.g., OpenCV, PyTorch) that release the Python Global Interpreter Lock (GIL)—to execute in parallel on different physical cores.
 
 This improvement effectively transforms the latency formula to:
 
