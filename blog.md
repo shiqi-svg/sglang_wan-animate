@@ -47,7 +47,7 @@ Let $L_{target}$ be the total target frames, $L_{clip}$ be the length of a singl
 
 $$L_{target} = L_{clip} + (L_{clip} - L_{op}) \times n$$
 
-Where $n \ge 0$ represents we need to perdorm $n-1$ times inference through diffusion method and is an integer. In engineering practice, we limit the upper bound of $L_{clip}$ based on VRAM capacity (Memory Budget), for example, $L_{clip} \le 100$. Through this method, we effectively reduce $T_{inf}$ latency.
+Where $n \ge 0$ represents we need to perdorm $n+1$ times inference through diffusion method and is an integer. In engineering practice, we limit the upper bound of $L_{clip}$ based on VRAM capacity (Memory Budget), for example, $L_{clip} \le 100$. Through this method, we effectively reduce $T_{inf}$ latency.
 
 #### 2.1.3 In-Depth Analysis
 
