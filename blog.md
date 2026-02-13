@@ -79,8 +79,6 @@ To address this mixed bottleneck of I/O-intensive and compute-intensive tasks, w
 
 nlike the sequential execution method, we decoupled the inter-frame dependencies. By instantiating a thread pool of size $K$ (where $K$ is a constant), we transformed the execution model into a concurrent paradigm. This allows multiple 2D pose (`pose2d`) inference tasks—typically executed by C-bound libraries (e.g., OpenCV, PyTorch) that release the Python Global Interpreter Lock (GIL)—to execute in parallel on different physical cores.
 
-This improvement effectively transforms the latency formula to:$$T_{pre}' \approx \frac{1}{\min(N, K)} \sum_{i=1}^{N} (t_{process}^{(i)}) + T_{overhead}$$Where $T_{overhead}$ represents the minimal overhead of context switching and thread management.
-
 This improvement effectively transforms the latency formula to:
 
 $$T_{pre}' \approx \frac{1}{\min(N, K)} \sum_{i=1}^{N} (t_{process}^{(i)}) + T_{overhead}$$
