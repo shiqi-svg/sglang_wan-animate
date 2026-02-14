@@ -1,4 +1,4 @@
-# # From 20 Minutes to 3 Minutes: Full-Pipeline Acceleration of Wan Video Generation and Deep Evaluation of H200/AMD MI300X
+# # From 11 Minutes to 4 Minutes: Full-Pipeline Acceleration of Wan Video Generation and Deep Evaluation of H200/AMD MI300X
 
 
 
@@ -8,7 +8,7 @@
 
 Wan is a diffusion‑based generative model, designed to create high‑quality images through iterative denoising. It showcases strong performance in visual generation tasks, particularly in producing detailed and stylistically consistent outputs.
 
-The Wan model faces a major bottleneck in generation speed—often exceeding 20 minutes—which severely constrained its use in production environment. The goal of our study is to reduce its latency to the minute level through both algorithmic optimization (e.g., adaptive frame-segmentation) and system‑level enhancement (e.g., parallelism management). This article presents our efforts that improves each stage of the video generation pipeline in Wan. Furthermore, we provide performance study across NVIDIA H200 and AMD MI300x (two flagship accelerators), giving performance analysis from the architecture persepctive. 
+The Wan model faces a major bottleneck in generation speed—often exceeding 11 minutes—which severely constrained its use in production environment. The goal of our study is to reduce its latency to the minute level through both algorithmic optimization (e.g., adaptive frame-segmentation) and system‑level enhancement (e.g., parallelism management). This article presents our efforts that improves each stage of the video generation pipeline in Wan. Furthermore, we provide performance study across NVIDIA H200 and AMD MI300x (two flagship accelerators), giving performance analysis from the architecture persepctive. 
 
 The generation process in Wan can be summarized as a two-stage pipeline:
 
