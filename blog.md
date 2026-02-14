@@ -13,7 +13,7 @@
 
 ## 1. Introduction & Problem Definition
 
-1. Introduction & Problem DefinitionThe original Wan project suffered from a significant generation speed bottleneck ($>20$ minutes), which severely limited its application in production environments. Our objective is to compress the generation time to the minute level through algorithmic optimization (preprocessing strategies) and system-level optimization (inference acceleration). This article details an adaptive dynamic frame segmentation algorithm and presents a performance comparison between the NVIDIA H200 and AMD flagship accelerators.
+The original Wan project suffered from a significant generation speed bottleneck ($>20$ minutes), which severely limited its application in production environments. Our objective is to compress the generation time to the minute level through algorithmic optimization (preprocessing strategies) and system-level optimization (inference acceleration). This article details an adaptive dynamic frame segmentation algorithm and presents a performance comparison between the NVIDIA H200 and AMD flagship accelerators.
 
 The generation process is abstracted into a two-stage serial pipeline:
 
@@ -34,18 +34,18 @@ Therefore, the end-to-end latency can be expressed as:$$T_{total} = T_{pre} + T_
 
 Inference utilizes a sliding window strategy defined by `clip_len` and `overlap`. To satisfy concatenation divisibility and stride constraints, the actual `target_frames` generated often exceed the `real_frames`, resulting in computational redundancy:
 
-$target = real + [(clip - overlap) - (real - overlap) \pmod{(clip - overlap)}]$
+$$L_{target} = L_{real} + [(L_{clip} - L_{op}) - (real - L_{op}) \pmod{(L_{clip} - L_{op})}],$$
 
-
-**The Issue:** When `real - overlap` cannot be perfectly divided by the stride (`clip - overlap`), the sequence is padded to the nearest divisible length, causing the generation of useless frames and a linear increase in computational overhead.
+where $L_{real}$ represents for the real frame of the input video (`real_frames`), $L_{target}$ is the final number of frames needed to generate (`target_frames`). $L_{clip}$, $L_{op}$ means the length of a single clip (`clip_len`), the overlap between adjacent clips (`overlap`) respectively.
+**The Issue:** This is the original computation used in Wan2.2. When `real - overlap` cannot be perfectly divided by the stride (`clip - overlap`), the sequence is padded to the nearest divisible length, causing the generation of useless frames and a linear increase in computational overhead.
 
 #### 2.1.2 Solution
 
 In long video generation tasks, segmenting long sequences into clips that the model can process is a critical issue. Traditional fixed-stride segmentation often leads to wasted edge frames or computational redundancy. We propose a reverse derivation strategy based on the target frame count.
 
-Let $L_{target}$ be the total target frames, $L_{clip}$ be the length of a single clip, $L_{op}$ be the overlap between adjacent clips, and $n$ be the number of segments. To ensure temporal continuity and maximize coverage, we establish the following constraint equation:
+Let $L^{\prime}_{target}$ be the new total target frames and $n$ be the number of segments. To ensure temporal continuity and maximize coverage, we establish the following constraint equation:
 
-$$L_{target} = L_{clip} + (L_{clip} - L_{op}) \times n$$
+$$L^{\prime}_{target} = L_{clip} + (L_{clip} - L_{op}) \times n$$
 
 Where $n \ge 0$ represents we need to perdorm $n+1$ times inference through diffusion method and is an integer. In engineering practice, we limit the upper bound of $L_{clip}$ based on Total frames of the input video, for example, $L_{clip} \le 100$. Through this method, we effectively reduce $T_{inf}$ latency.
 
