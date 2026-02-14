@@ -1,47 +1,49 @@
-# Wan-Video Generation Acceleration: A Dynamic Segmentation Approach and Performance Benchmarking on NVIDIA H200 & AMD MI300X
-
-**Suggested Titles:**
-
-* **Technical:** Wan-Video Generation Acceleration: A Dynamic Segmentation Approach and Performance Benchmarking on NVIDIA H200 & AMD MI300X 
-
-
-* **General:** From 20 Minutes to 3 Minutes: Full-Link Acceleration of Wan Video Generation and Deep Evaluation of H200/AMD 
+# # From 20 Minutes to 3 Minutes: Full-Pipeline Acceleration of Wan Video Generation and Deep Evaluation of H200/AMD MI300X
 
 
 
 ---
 
-## 1. Introduction & Problem Definition
+## 1. Introduction
 
-The original Wan project suffered from a significant generation speed bottleneck ($>20$ minutes), which severely limited its application in production environments. Our objective is to compress the generation time to the minute level through algorithmic optimization (preprocessing strategies) and system-level optimization (inference acceleration). This article details an adaptive dynamic frame segmentation algorithm and presents a performance comparison between the NVIDIA H200 and AMD flagship accelerators.
+Wan is a diffusion‑based generative model, designed to create high‑quality images through iterative denoising. It showcases strong performance in visual generation tasks, particularly in producing detailed and stylistically consistent outputs.
 
-The generation process is abstracted into a two-stage serial pipeline:
+The Wan model faces a major bottleneck in generation speed—often exceeding 20 minutes—which severely constrained its use in production environment. The goal of our study is to reduce its latency to the minute level through both algorithmic optimization (e.g., adaptive frame-segmentation) and system‑level enhancement (e.g., parallelism management). This article presents our efforts that improves each stage of the video generation pipeline in Wan. Furthermore, we provide performance study across NVIDIA H200 and AMD MI300x (two flagship accelerators), giving performance analysis from the architecture persepctive. 
 
-* **Preprocess:** Preprocess: Input video/reference image $\rightarrow$ Keypoints/Human Pose, Bounding Boxes (bbox), Alignment information, etc. (Includes components like YOLO + ViTPose).
+The generation process in Wan can be summarized as a two-stage pipeline:
+
+* **Stage 1: Preprocessing:** Input video and reference image are processed to get keypoints in the input, set up bounding boxes, obtain alignment information, etc. This stage may use components like YOLO and ViTPose. 
 
 
-* **Inference:** Inference: The diffusion/generation backbone (e.g., DiT) generates frames segment-by-segment using a sliding window strategy, followed by concatenation/overlap processing.
+* **Stage 2: Inference:** Using the preprocessed input in the first stage, the diffusion/generation backbone (e.g., DiT) generates frames segment-by-segment using a sliding window strategy. This stragey employs segment concatenation and an overlapping method (to be discussed as follows). 
 
-Therefore, the end-to-end latency can be expressed as:$$T_{total} = T_{pre} + T_{inf}$$The optimization goal is to simultaneously reduce $T_{pre}$ and $T_{inf}$ without significantly sacrificing quality.
+The preprocessing and inference happen on CPU and GPU, respectively, creating an execution pipeline. Hence, the end-to-end latency of Wan can be formulated as: $$T_{total} = T_{pre} + T_{inf}$$. We aim to optimize both stages in the pipeline without significantly impacting output quality.
 
 ---
 
-## 2. Core Optimization
+## 2. Methods
+We depict our methids in this section. 
 
-### 2.1 Adaptive Dynamic Frame Segmentation
+### 2.1 Adaptive Frame Segmentation
 
 #### 2.1.1 Problem Modeling
 
-Inference utilizes a sliding window strategy defined by `clip_len` and `overlap`. To satisfy concatenation divisibility and stride constraints, the actual `target_frames` generated often exceed the `real_frames`, resulting in computational redundancy:
+The second stage in Wan utilizes a sliding window strategy. In particular, Wan generates long images and videos by working in small overlapping windows instead of processing the entire canvas or timeline at once. Wan splits a large image (spatially) or a long video (temporally) into overlapping segments. The first window is generated normally. Each next window is generated while being conditioned on the previously created region, using cached features and cross‑attention to maintain continuity.The overlapping areas are blended so there are no seams or flicker.This process repeats until the full image or video is complete.
 
-$$L_{target} = L_{real} + [(L_{clip} - L_{op}) - (real - L_{op}) \pmod{(L_{clip} - L_{op})}],$$
+Assume that `target` and `real` are the number of frames Wan generates and the number of frames we expect to generate, respectively. `target` is often larger than `real`, resulting in computation redundancy because of the needs for staisfying concatenation divisibility and stride constraint. We formulate the relationship between `target` and `real` as follows. 
+ 
+$$L_{target} = L_{real} + [(L_{clip} - L_{op}) - (L_{real} - L_{op}) \pmod{(L_{clip} - L_{op})}],$$
 
 where $L_{real}$ represents for the real frame of the input video (`real_frames`), $L_{target}$ is the final number of frames needed to generate (`target_frames`). $L_{clip}$, $L_{op}$ means the length of a single clip (`clip_len`), the overlap between adjacent clips (`overlap`) respectively.
-**The Issue:** This is the original computation used in Wan2.2. When `real - overlap` cannot be perfectly divided by the stride (`clip - overlap`), the sequence is padded to the nearest divisible length, causing the generation of useless frames and a linear increase in computational overhead.
 
-#### 2.1.2 Solution
+**Problems:** When `real - overlap` cannot be perfectly divided by the stride (`clip - overlap`), the input sequence is padded to the nearest divisible length, causing the generation of useless frames and a linear increase in computational overhead.
 
-In long video generation tasks, segmenting long sequences into clips that the model can process is a critical issue. Traditional fixed-stride segmentation often leads to wasted edge frames or computational redundancy. We propose a reverse derivation strategy based on the target frame count.
+In fact, in long video generation tasks, segmenting long sequences into clips that the diffusion model can process is challenging. The traditional methods often use a fixed stride for segmentation. This segmentation strategy does not consider GPU memory capacity, and could waste edge frames when the overlapping is too much. 
+
+
+#### 2.1.2 Solution (pending)
+
+To address the above problems, we propose a reverse derivation strategy based on the constraint of GPU memory capacity.
 
 Let $L^{\prime}_{target}$ be the new total target frames and $n$ be the number of segments. To ensure temporal continuity and maximize coverage, we establish the following constraint equation:
 
@@ -50,113 +52,98 @@ $$L^{\prime}_{target} = L_{clip} + (L_{clip} - L_{op}) \times n$$
 Where $n \ge 0$ represents we need to perdorm $n+1$ times inference through diffusion method and is an integer. In engineering practice, we limit the upper bound of $L_{clip}$ based on Total frames of the input video, for example, $L_{clip} \le 100$. Through this method, we effectively reduce $T_{inf}$ latency.
 
 #### 2.1.3 In-Depth Analysis
-
-By implementing `auto_set_lim` via code, we can dynamically solve for the optimal $L_{clip}$ and $n$ for any arbitrary $L_{target}$. The advantages of this approach include:
-
-
-* **Maximization of VRAM Utilization:** Dynamically adjusting the clip length to fill computational cores avoids idle computing power caused by padding. The essence of this algorithm is to maximize **Computational Density**. By dynamically solving for $L_{clip}$, we eliminate the **Pipeline Bubbles** introduced by padding in traditional methods, ensuring that the GPU's Tensor Cores remain in a saturated computational state at every Time Step.
+We implement the above strateg and add a knob `auto_set_lim` to allow the user to enable it. When enabling, the sytem solves the optimization problem to find the optimal $clip$ and $n$ given a $target$. Our method has the following benefits. 
 
 
-* **Temporal Consistency:** It guarantees a fixed overlap, making the video context smoother during concatenation.
+* **Maximization of VRAM Utilization:** By dynamically 
+Adaptively changing the clip length to maximize the utilization of GPU memory avoids padding in the traditional methods, hence avoding the waste of computation power; the GPU's tensor cores also remain high utilization at each time step. 
+
+* **Temporal Consistency:** Our method employs a constant overlap across frames, making the video context smooth during the frame concatenation.
 
 
+### 2.2 Removing Dependency for Thread-Level Parallelism
 
-### 2.2 From Sequential Dependency to Task-Level Parallelism
+#### 2.2.1 Problem Modeling: Performance Bottleneck in Preprocessing
 
-We describe this optimization as breaking the **Pseudo-Dependency** between frames.
-
-#### 2.2.1 Problem Modeling: The Serial Bottleneck
-
-In the baseline implementation, the preprocessing pipeline (specifically 2D pose estimation and frame extraction) operates as a strict sequential synchronous process. Mathematically, for a video sequence containing $N$ frames, the total preprocessing latency $T_{pre}$ is determined by the cumulative sum of single-frame processing times:
+In the stage of preprocessing (e.g., 2D pose estimatoin and frame extraction), there is dependency between frame processing. For a video sequence containing $N$ frames, the preprocessing latency $T_{pre}$ is formulated as a cumulative sum of single-frame processing times, shown as follows.
 
 $$T_{pre} = \sum_{i=1}^{N} (t_{decode}^{(i)} + t_{inference}^{(i)})$$
 
-Under this serial execution model, host CPU utilization is severely limited by single-core performance metrics. Crucially, this introduces significant pipeline bubbles, causing the downstream video generation model to remain idle while waiting for the entire sequence preprocessing to complete.
+During the preprocessing, a framework is processed by one CPU core. Although we can parallelize the preprocessing by asking multiple CPU cores to work on the same frame, the thread management overhead shadows the performance benefit we can get from the parallelization. Hence, the preprocessing on CPU is slow, leading to a pipeline bubble on GPU. 
 
-#### 2.2.2 Solution: Thread-Pool-Based Concurrent Scheduling
+#### 2.2.2 Solution: Parallel Preprocessing
 
-To address this mixed bottleneck of I/O-intensive and compute-intensive tasks, we refactored the preprocessing module using a **Thread Pool Executor** pattern, achieving coarse-grained **Task-Level Parallelism (TLP)**.
+To address the above problem, we relax the depencies between frame preprocessing so that we can process multiple frames at the same time with multiple cores. In particular, we create a pool of threads (the pool size is the same as the number of CPU cores in a server).  Each CPU core is assigned with one thread, and each thread is in charge of preprocessing one frame. The parallel preprocessing of frames is possibile, because the frame preprocessing is typically implemented by a C library (e.g., OpenCV) and hence is not constrained by the Python Global Interpreter Lock (GIL). 
 
-Unlike the sequential execution method, we decoupled the inter-frame dependencies. By instantiating a thread pool of size $K$ (where $K$ is a constant), we transformed the execution model into a concurrent paradigm. This allows multiple 2D pose (`pose2d`) inference tasks—typically executed by C-bound libraries (e.g., OpenCV, PyTorch) that release the Python Global Interpreter Lock (GIL)—to execute in parallel on different physical cores.
-
-This improvement effectively transforms the latency formula to:
+With the above solution, the preprocessing latency is formulated as follows: 
 
 $$T_{pre}' \approx \frac{1}{\min(N, K)} \sum_{i=1}^{N} (t_{process}^{(i)}) + T_{overhead}$$
 
-Where $T_{overhead}$ represents the minimal overhead of context switching and thread management.
+Where $T_{overhead}$ is the thread management overhead, and $N$ and $K$ are xxx and xxxx, respectively. 
 
 *Note on Multi-GPU:* Multi-card setups (FSDP + ulysses_size, etc.) introduce additional communication, thread scheduling, and synchronization overhead. Reports indicate that running the original preprocessing flow in a multi-card environment actually slowed it down (up to ~170s), exhibiting typical resource contention/synchronization amplification. Therefore, additional restrictions were implemented to force preprocessing to run under single-card conditions even in multi-card environments.
 
-#### 2.2.3 In-Depth Analysis: Why it works?
+#### 2.2.3 In-Depth Analysis 
 
+* **No Limitation of GIL.** Although GIL is notoriously known for limiting multi-thread performance on CPU, our profiling shows that heavy tasks in preprocessing (e.g., `pose2d` inference and image transformations) rely heavily on underlying C/C++ kernels (such as NumPy and PyTorch operations). These operations release the GIL during preprocessing, allowing our thread pool to make the best use of CPU cores. 
 
-* **Circumventing the GIL via C Extensions:** Although Python's Global Interpreter Lock (GIL) notoriously limits CPU-bound multi-threaded performance, our profiling shows that heavy tasks in preprocessing (e.g., `pose2d` inference and image transformations) rely heavily on underlying C/C++ kernels (like NumPy and PyTorch operations). These operations release the GIL during execution, allowing our thread pool to achieve near-linear scalability on multi-core CPUs (e.g., fully utilizing all 36 vCPUs mentioned in the baseline test).
-
-
-
-* **Saturation of Host Compute Capacity:** By concurrently distributing $N$ frames, we maximize the host CPU's **Instruction-Level Parallelism (ILP)** and memory bandwidth utilization. This strategy shifts the bottleneck from single-thread clock speed to overall multi-core throughput, significantly reducing preprocessing time from 229s to 78s, effectively approaching the theoretical limit defined by **Amdahl's Law** for the parallelizable portion of the workload.
-
+* **Thread-level parallelism.** By concurrently preprocessing frames, we leverage thread-level parallelism to improve overall throughput of preprocessing. This not only maximizes the utilization of memory bandwidth, but also transforms our optimization from latency-oriented to throughput-oriented. Since the preprocessing is the performance bottleneck of the two-stage pipeline, reducing preprocessing time speeds up the whole video generation pipeline. Our method of using thread-level parallelism is very effective, reduing preprocessing time from 229s to 78s (xxxxx more details.)
 
 
 ---
 
-## 3. Experimental Setup & Hardware Environment
-
-We established a rigorous Benchmark environment to evaluate the optimization effects:
-
-* **Baseline:** Wan Origin Project (with/without SGLang).
+## 3. Evaluation
 
 
-* **Hardware A:** NVIDIA H200 (1/2 cards), 141GB HBM3e.
+* **Baseline:** Vanilla Wan (with/without SGLang).
 
 
-* **Hardware B:** AMD Instinct MI300X, 192GB HBM3.
+* **Hardware A:** NVIDIA H200 (one or two cards), each of which has 141GB HBM3e.
 
 
+* **Hardware B:** one AMD Instinct MI300X with 192GB HBM3.
 
-### 3.1 Performance Evaluation
+* **Software:**
+
+We refer to the evaluation results using our optimization techniques as Yotta-Wan in the rest of this section. 
+
+### 3.1 Results
 
 #### 3.1.1 End-to-End Acceleration
+Table 1 shows the results collected on H200. 
 
-By implementing the aforementioned optimizations, we achieved significant performance improvements on the H200. The following tests were conducted using the same image and video inputs:
-
+**Table 1**: Evaluation results on H200
 | Version | FPS | Target Frames | Preprocess (s) | Inference (s) | Total (s) | Hardware |
 | --- | --- | --- | --- | --- | --- | --- |
-| **Origin** | 30 | - | 229 | 129 | 325 | 2x H200, 36 vCPU |
-| **Ours** | 30 | - | 229 | 78 | 270 (**↓16.9%**) | 2x H200, 36 vCPU |
-| **Ours (2025/12/23)** | 30 | 153 | 79 | 133 | 212 (**↓34.8%**) | 2x H200, 36 vCPU |
-| **Origin** | 30 | - | 229 | 232 | 684 | 1x H200, 18 vCPU |
-| **Ours** | 30 | - | 229 | 120 | 568 (**↓16.9%**) | 1x H200, 18 vCPU |
-| **Ours (2025/12/23)** | 30 | 153 | 120 | 290 | 410 (**↓40.1%**) | 1x H200, 18 vCPU |
+| **Vanila** | 30 | - | 229 | 129 | 325 | 2x H200, 36 vCPU |
+| **Yotta-Wan** | 30 | 153 | 79 | 133 | 212 (**↓34.8%**) | 2x H200, 36 vCPU |
+| **Vanilla** | 30 | - | 229 | 232 | 684 | 1x H200, 18 vCPU |
+| **Yotta-Wan** | 30 | 153 | 120 | 290 | 410 (**↓40.1%**) | 1x H200, 18 vCPU |
 
 
-
-* **Preprocess:** Time reduced from 229s to 79s (↓65.5%), primarily due to the parallelized data loading and decoding pipeline.
-
-
-* **Inference:** Time reduced from 129s to 79s (↓38.7%).
+* **Preprocessing stage:** The time is reduced from 229s to 79s (↓65.5%), primarily due to thread-level parallelism for preprocessing and data loading.
 
 
-* **Total Generation Time:** Reduced from $>20$ minutes (and a baseline of 325s) to 212s.
+* **Inference stage:** The time is reduced from 129s to 79s (↓38.7%).
+
+
+* **Total latency:** Overall, the time is reduced by at least 34%.
 
 
 
 #### 3.1.2 NVIDIA H200 vs. AMD MI300X (Key Comparison)
 
-Tests were conducted using the same image and video inputs:
+We also use Lora (lightx2v/Wan2.1-I2V-14B-720P-StepDistill-CfgDistill-Lightx2v) to improve the performance on few step (e.g. 4 steps). The method loading lora is same as Wan2.2. Actually, we simply use the original method provided in Wan2.2.
 
 | Setup | Preprocess | Inference | Total | clip_len | target_frames | steps | GPU |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| **NVIDIA Origin** | 94s (no replace) | 181s | 275s | 77 | 153 | 4 (no lora) | 1x H200 |
-| **Ours** | 93s (no replace) | 287s | 380s | 77 | 153 | 4 (lora) | 1x H200 |
-| **AMD Ours** | 33s (no replace) | 215s | 248s | 77 | 153 | 4 (lora) | 1x MI300X |
-| **AMD Ours** | 33s (no replace) | 220s | 253s | 77 | 153 | 4 (no lora) | 1x MI300X |
+| **NVIDIA Vanilla** | 94s (no replace) | 181s | 275s | 77 | 153 | 4 (no lora) | 1x H200 |
+| **NVIDIA Yotta-Wan** | 93s (no replace) | 287s | 380s | 77 | 153 | 4 (lora) | 1x H200 |
+| **AMD Yotta-Wan (with Lora)** | 33s (no replace) | 215s | 248s | 77 | 153 | 4 (lora) | 1x MI300X |
+| **AMD Yotta-Wan (no Lora)** | 33s (no replace) | 220s | 253s | 77 | 153 | 4 (no lora) | 1x MI300X |
 
 
-
-**Analysis:**
-
-* **VRAM Advantage:** We must highlight whether AMD's larger VRAM (192GB) allowed for a larger $L_{clip}$, thereby reducing the segment count $n$ and total inference time.
+* **VRAM capacity advantage:** We see AMD GPU has shorter latency than NVIDIA GPU in this evaluation. This performance benefit comes from larger VRAM in AMD GPU (192 GB). This larger memory capacity is able to hold a larger $L_{clip}$, thereby reducing the segment count $n$ and total video generation time.
 
 #### 3.1.3 Acceleration Effects with SGLang
 
@@ -170,7 +157,7 @@ To further validate our solution, we tested our method within the SGLang acceler
 | Ours | 90s | 159s | 249s | 99 | 197 | 4 (no lora) | 1x H200 |
 | Ours | 90s | 163s | 253s | 99 | 197 | 4 (lora) | 1x H200 |
 
-
+The lora method is also same as SGLang.
 
 #### 3.1.4 Discussion and Parameter Sensitivity
 
